@@ -4,16 +4,14 @@
 Author: João Taveira Araújo (first second at gmail / @jta)
 """
 import argparse
-import collections
 import lastdb
 import logging
-import misc
 import pylast
 import os
 
 API_KEY_VAR = "LAST_FM_API_PKEY"
 
-logger = logging.getLogger('scrapefm')
+LOGGER = logging.getLogger('scrapefm')
 
 class Scraper(object):
     """ Use Last.fm API to retrieve data to local database. """
@@ -32,11 +30,14 @@ class Scraper(object):
 
         while len(visited) < maxlimit:
             username = unvisited.pop()
+
             if username not in visited:
                 visited[username] = self._scrape_user(username)
+
             for new in self._friend_discovery(username, visited):
                 unvisited.add(new)
-            logger.debug("%d unvisited users.", len(unvisited))
+
+            LOGGER.debug("%d unvisited users.", len(unvisited))
                 
     def _friend_discovery(self, username, users, maxfriends = 500):
         """ Given user, explore connected nodes.
@@ -45,12 +46,12 @@ class Scraper(object):
         """
         user = self.network.get_user(username)
         for friend in user.get_friends(maxfriends):
-            friendname = friend.name
-            if friendname in users:
-                logger.debug("Connecting %s with %s.", username, friendname)
-                lastdb.Friends.create( a = users[username], b = users[friendname])
+            if friend.name in users:
+                LOGGER.debug("Connecting %s with %s.", username, friend.name)
+                lastdb.Friends.create( a = users[username], 
+                                       b = users[friend.name])
             else:
-                yield friendname
+                yield friend.name
 
     def _scrape_user(self, username):
         """ Scrapes all info associated to username into database
@@ -68,7 +69,7 @@ class Scraper(object):
         if not values['country'].get_name():
             del values['country']
 
-        logger.debug("Creating user %s.", user)
+        LOGGER.debug("Creating user %s.", user)
         lastdb.User.create( **values )
         return user.get_id()
 
