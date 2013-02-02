@@ -4,6 +4,7 @@
 Author: João Taveira Araújo (first second at gmail / @jta)
 """
 import argparse
+import collections
 import lastdb
 import logging
 import pylast
@@ -19,23 +20,24 @@ class Scraper(object):
         self.network = pylast.LastFMNetwork(api_key = api_key)
         self.network.enable_caching()
 
-    def scrape(self, seed, maxlimit = 5):
+    def populate_users(self, seed, maxlimit = 100000):
         """ Start from seed user and scrape info by following social graph.
         """
         # set of inspected usernames
         visited   = dict([ (u.name, u.id) for u in lastdb.User.select() ])
         # list of users (obj) yet to be visited
         # all names must be converted to lowercase for comparison
-        unvisited = set([seed])
+        unvisited = collections.deque([seed])
 
         while len(visited) < maxlimit:
-            username = unvisited.pop()
+            username = unvisited.popleft()
+            LOGGER.debug("Processing username %s.", username)
 
             if username not in visited:
                 visited[username] = self._scrape_user(username)
 
             for new in self._friend_discovery(username, visited):
-                unvisited.add(new)
+                unvisited.append(new)
 
             LOGGER.debug("%d unvisited users.", len(unvisited))
                 
@@ -47,9 +49,13 @@ class Scraper(object):
         user = self.network.get_user(username)
         for friend in user.get_friends(maxfriends):
             if friend.name in users:
-                LOGGER.debug("Connecting %s with %s.", username, friend.name)
-                lastdb.Friends.create( a = users[username], 
-                                       b = users[friend.name])
+                ordered = dict( zip(('a', 'b'), 
+                                sorted([users[username], users[friend.name]])) )
+                try:
+                    lastdb.Friends.get( **ordered )
+                except lastdb.Friends.DoesNotExist:
+                    LOGGER.debug("Connecting %s with %s.", *ordered.values())
+                    lastdb.Friends.create( **ordered )
             else:
                 yield friend.name
 
@@ -65,10 +71,11 @@ class Scraper(object):
             values[field.name] = getattr(user, 'get_%s' % field.name)() 
 
         # annoyingly get_country returns class rather than string.
-        # if None, let it default to empty string.
         if not values['country'].get_name():
-            del values['country']
+            values['country'] = None
 
+        # filter out fields with no values and let defaults take over.
+        values = dict((k, v) for k, v in values.items() if v)
         LOGGER.debug("Creating user %s.", user)
         lastdb.User.create( **values )
         return user.get_id()
@@ -101,11 +108,6 @@ def parse_args():
     else:
         logging.basicConfig(level=logging.INFO)
 
-    # XXX: start database from scratch each time for now
-    try:
-        os.remove(args.db)
-    except OSError:
-        pass
 
     return args
 
@@ -116,7 +118,7 @@ def main():
 
     lastdb.load(args.db)
     scraper = Scraper(args.api_key)
-    scraper.scrape('RJ')
+    scraper.populate_users('RJ', 10)
 
 if __name__ == "__main__":
     main()

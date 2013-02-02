@@ -9,20 +9,20 @@ class BaseModel(Model):
 class User(BaseModel):
     id   = IntegerField(primary_key=True)
     name = CharField()
-    age  = IntegerField()
+    age  = IntegerField(default=0)
     country = CharField(default='')
-    gender  = CharField()
+    gender  = CharField(default='')
     playcount = IntegerField()
 
 class Friends(BaseModel):
-    a = ForeignKeyField(User, related_name='friends')
+    a = ForeignKeyField(User)
     b = ForeignKeyField(User)
 
 def load(dbname):
     dbase.init(dbname)
     dbase.connect()
-    User.create_table()
-    Friends.create_table()
+    User.create_table(fail_silently=True)
+    Friends.create_table(fail_silently=True)
     return dbase
 
 
