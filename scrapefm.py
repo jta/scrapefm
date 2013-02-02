@@ -4,6 +4,7 @@
 Author: João Taveira Araújo (first second at gmail / @jta)
 """
 import argparse
+import lastdb
 import logging
 import os
 
@@ -36,13 +37,19 @@ def parse_args():
     else:
         logging.basicConfig(level=logging.INFO)
 
+    # XXX: start database from scratch each time for now
+    try:
+        os.remove(args.db)
+    except OSError:
+        pass
+
     return args
 
 def main():
     """ Main entry point
     """
     args    = parse_args()
-    print args.db, args.api_key
+    lastdb.load(args.db)
 
 if __name__ == "__main__":
     main()
