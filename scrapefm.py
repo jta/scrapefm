@@ -20,41 +20,6 @@ class Scraper(object):
         self.network = pylast.LastFMNetwork(api_key = api_key)
         self.network.enable_caching()
 
-    def populate_users(self, seed, maxlimit = 100000):
-        """ Start from seed user and scrape info by following social graph.
-        """
-        # set of inspected usernames
-        visited   = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
-        # list of users (obj) yet to be visited
-        unvisited = set(visited.keys())
-        unvisited.add(seed)
-
-        while len(visited) < maxlimit:
-            username = unvisited.pop()
-            LOGGER.debug("Processing username %s.", username)
-            if username not in visited:
-                visited[username] = self._scrape_user(username)
-            for new in self._friend_discovery(username, visited):
-                unvisited.add(new)
-            lastdb.commit()
-                
-    def populate_charts(self, datefmt, datematch):
-        """ From user list in db, import weekly charts for matching dates.
-        """
-        artistcache = dict([ (a.name, a.id) for a in lastdb.Artists.select() ])
-
-        for dbuser in lastdb.Users.select():
-            user = self.network.get_user(dbuser.name)
-            for weekfrom, weekto in user.get_weekly_chart_dates():
-                date = datetime.fromtimestamp(int(weekfrom))
-                if date.strftime(datefmt) != datematch:
-                    continue
-                try:
-                    lastdb.WeeklyArtistChart.get(uid = dbuser.id, weekfrom = weekfrom)
-                except:
-                    self._scrape_week(user, dbuser.id, weekfrom, weekto, artistcache)
-            lastdb.commit()
-
     def _friend_discovery(self, username, users, maxfriends = 500):
         """ Given user, explore connected nodes.
             If a neighbour node has already been seen, add edge to friend table.
@@ -72,6 +37,13 @@ class Scraper(object):
                     lastdb.Friends.create( **ordered )
             else:
                 yield friend.name
+
+    def _scrape_artist(self, name):
+        assert not lastdb.Artists.select().where(lastdb.Artists.name == name).exists()
+
+        LOGGER.debug("Inserting new artist: %s.", name)
+        artist = lastdb.Artists.create(name = name)
+        return artist.id
 
     def _scrape_user(self, username):
         """ Scrapes all info associated to username into database
@@ -106,15 +78,48 @@ class Scraper(object):
                                              uid = uid,
                                              aid = artistcache[name],
                                              playcount = playcount )
+               
+    def populate_charts(self, datefmt, datematch):
+        """ From user list in db, import weekly charts for matching dates.
+        """
+        artistcache = dict([ (a.name, a.id) for a in lastdb.Artists.select() ])
 
-    def _scrape_artist(self, name):
+        for dbuser in lastdb.Users.select():
+            user = self.network.get_user(dbuser.name)
+            for weekfrom, weekto in user.get_weekly_chart_dates():
+                date = datetime.fromtimestamp(int(weekfrom))
+                if date.strftime(datefmt) != datematch:
+                    continue
+                try:
+                    lastdb.WeeklyArtistChart.get(   uid = dbuser.id, 
+                                                    weekfrom = weekfrom)
+                except lastdb.WeeklyArtistChart.DoesNotExist:
+                    self._scrape_week(  user, dbuser.id, 
+                                        weekfrom, weekto, artistcache)
+            lastdb.commit()
 
-        assert not lastdb.Artists.select().where(lastdb.Artists.name == name).exists()
+    def populate_tags(self):
+        pass
 
-        LOGGER.debug("Inserting new artist: %s.", name)
-        artist = lastdb.Artists.create(name = name)
+    def populate_users(self, seed, maxlimit = 100000):
+        """ Start from seed user and scrape info by following social graph.
+        """
+        # set of inspected usernames
+        visited   = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
+        # list of users (obj) yet to be visited
+        unvisited = set(visited.keys())
+        unvisited.add(seed)
 
-        return artist.id
+        while len(visited) < maxlimit:
+            username = unvisited.pop()
+            LOGGER.debug("Processing username %s.", username)
+            if username not in visited:
+                visited[username] = self._scrape_user(username)
+            for new in self._friend_discovery(username, visited):
+                unvisited.add(new)
+            lastdb.commit()
+
+
 
 
 def parse_args():
@@ -158,6 +163,7 @@ def main():
     scraper = Scraper(args.api_key)
     scraper.populate_users('RJ', 10)
     scraper.populate_charts('%Y-%m','2012-12')
+    scraper.populate_tags()
 
 if __name__ == "__main__":
     main()
