@@ -4,7 +4,7 @@
 Author: João Taveira Araújo (first second at gmail / @jta)
 """
 import argparse
-import collections
+from datetime import datetime
 import lastdb
 import logging
 import pylast
@@ -24,23 +24,37 @@ class Scraper(object):
         """ Start from seed user and scrape info by following social graph.
         """
         # set of inspected usernames
-        visited   = dict([ (u.name, u.id) for u in lastdb.User.select() ])
+        visited   = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
         # list of users (obj) yet to be visited
-        # all names must be converted to lowercase for comparison
-        unvisited = collections.deque([seed])
+        unvisited = set(visited.keys())
+        unvisited.add(seed)
 
         while len(visited) < maxlimit:
-            username = unvisited.popleft()
+            username = unvisited.pop()
             LOGGER.debug("Processing username %s.", username)
-
             if username not in visited:
                 visited[username] = self._scrape_user(username)
-
             for new in self._friend_discovery(username, visited):
-                unvisited.append(new)
-
-            LOGGER.debug("%d unvisited users.", len(unvisited))
+                unvisited.add(new)
+            lastdb.commit()
                 
+    def populate_charts(self, datefmt, datematch):
+        """ From user list in db, import weekly charts for matching dates.
+        """
+        artistcache = dict([ (a.name, a.id) for a in lastdb.Artists.select() ])
+
+        for dbuser in lastdb.Users.select():
+            user = self.network.get_user(dbuser.name)
+            for weekfrom, weekto in user.get_weekly_chart_dates():
+                date = datetime.fromtimestamp(int(weekfrom))
+                if date.strftime(datefmt) != datematch:
+                    continue
+                try:
+                    lastdb.WeeklyArtistChart.get(uid = dbuser.id, weekfrom = weekfrom)
+                except:
+                    self._scrape_week(user, dbuser.id, weekfrom, weekto, artistcache)
+            lastdb.commit()
+
     def _friend_discovery(self, username, users, maxfriends = 500):
         """ Given user, explore connected nodes.
             If a neighbour node has already been seen, add edge to friend table.
@@ -64,21 +78,43 @@ class Scraper(object):
         """
         user   = self.network.get_user(username)
 
-        # fields in lastdb.User table maps to respective get function
-        # in pylast.User class
+        # fields in lastdb.Users table maps to respective get function
+        # in pylast.Users class
         values = {}
-        for field in lastdb.User._meta.get_fields():
+        for field in lastdb.Users._meta.get_fields():
             values[field.name] = getattr(user, 'get_%s' % field.name)() 
 
         # annoyingly get_country returns class rather than string.
         if not values['country'].get_name():
             values['country'] = None
 
+        
         # filter out fields with no values and let defaults take over.
         values = dict((k, v) for k, v in values.items() if v)
         LOGGER.debug("Creating user %s.", user)
-        lastdb.User.create( **values )
+        lastdb.Users.create( **values )
         return user.get_id()
+
+    def _scrape_week(self, user, uid, weekfrom, weekto, artistcache):
+        LOGGER.debug("Scraping week from %s for user %s.", weekfrom, user.name)
+
+        for name, playcount in user.get_weekly_artist_charts(weekfrom, weekto):
+            if name not in artistcache:
+                artistcache[name] = self._scrape_artist(name)
+
+            lastdb.WeeklyArtistChart.create( weekfrom = weekfrom,
+                                             uid = uid,
+                                             aid = artistcache[name],
+                                             playcount = playcount )
+
+    def _scrape_artist(self, name):
+
+        assert not lastdb.Artists.select().where(lastdb.Artists.name == name).exists()
+
+        LOGGER.debug("Inserting new artist: %s.", name)
+        artist = lastdb.Artists.create(name = name)
+
+        return artist.id
 
 
 def parse_args():
@@ -108,6 +144,8 @@ def parse_args():
     else:
         logging.basicConfig(level=logging.INFO)
 
+    if not args.api_key:
+        raise Exception
 
     return args
 
@@ -119,6 +157,7 @@ def main():
     lastdb.load(args.db)
     scraper = Scraper(args.api_key)
     scraper.populate_users('RJ', 10)
+    scraper.populate_charts('%Y-%m','2012-12')
 
 if __name__ == "__main__":
     main()
