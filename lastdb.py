@@ -10,7 +10,7 @@ class User(BaseModel):
     id   = IntegerField(primary_key=True)
     name = CharField()
     age  = IntegerField()
-    country = CharField()
+    country = CharField(default='')
     gender  = CharField()
     playcount = IntegerField()
 
