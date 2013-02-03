@@ -13,6 +13,7 @@ import random
 
 API_KEY_VAR = "LAST_FM_API_PKEY"
 
+
 LOGGER = logging.getLogger('scrapefm')
 
 class Scraper(object):
@@ -48,7 +49,6 @@ class Scraper(object):
         veteran  = self.network.get_user('RJ')
         for weekfrom, weekto in veteran.get_weekly_chart_dates():
             date = datetime.fromtimestamp(int(weekfrom))
-            print date.strftime(datefmt)
             if date.strftime(datefmt) == datematch:
                 weeklist.append( (weekfrom, weekto) )
         return weeklist
@@ -164,12 +164,16 @@ class Scraper(object):
         # set of inspected usernames
         visited   = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
         # set of users (obj) yet to be visited
-        unvisited = set([seed])
+        username  = seed
+        unvisited = set([])
 
         while len(visited) < maxlimit:
-            username = unvisited.pop()
-            while username in visited and len(unvisited):
+            while username in visited:
+                if not len(unvisited):
+                    username = random.choice(visited.keys())
+                    break
                 username = unvisited.pop()
+                
             self._scrape( self._scrape_users, (username, visited, unvisited) )
 
 
@@ -195,10 +199,11 @@ def parse_args():
 
     args = parser.parse_args()
 
+    logging.basicConfig()
     if args.debug:
-        logging.basicConfig(level=logging.DEBUG)
+        LOGGER.setLevel(logging.DEBUG)
     else:
-        logging.basicConfig(level=logging.INFO)
+        LOGGER.setLevel(logging.INFO)
 
     if not args.api_key:
         raise Exception
@@ -213,7 +218,7 @@ def main():
     lastdb.load(args.db)
     scraper = Scraper(args.api_key)
     try:
-        scraper.populate_users('RJ', 10)
+        scraper.populate_users('RJ', 50)
         scraper.populate_charts('%Y-%W','2013-01')
         scraper.populate_tags()
     except:
