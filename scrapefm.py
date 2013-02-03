@@ -4,6 +4,7 @@
 Author: João Taveira Araújo (first second at gmail / @jta)
 """
 import argparse
+import collections
 from datetime import datetime
 import lastdb
 import logging
@@ -16,14 +17,18 @@ API_KEY_VAR = "LAST_FM_API_PKEY"
 
 LOGGER = logging.getLogger('scrapefm')
 
+class ScraperException(Exception):
+    """ Raised if too many internal errors from Last.fm API """
+
 class Scraper(object):
     """ Use Last.fm API to retrieve data to local database. """
     def __init__(self, api_key):
         self.network = pylast.LastFMNetwork(api_key = api_key)
         self.network.enable_caching()
+        self.errcnt = 0
         self.errnum = 3
 
-    def _friend_discovery(self, username, users, maxfriends = 500):
+    def _friend_discovery(self, username, users, maxfriends = 50):
         """ Given user, explore connected nodes.
             If a neighbour node has already been seen, add edge to friend table.
             Otherwise, return unexplored neighbour.
@@ -53,16 +58,27 @@ class Scraper(object):
                 weeklist.append( (weekfrom, weekto) )
         return weeklist
 
-    def _scrape(self, func, args):
-        """ Wrapper which handles pylast.* exceptions
+    def _commit_or_roll(func):
+        """ Commit to db or rollback.
+            Handles pylast.* exceptions gracefully. 
+            Quits if too many network errors.
         """
-        try:
-            func(*args)
-            lastdb.commit()
-        except (pylast.WSError, 
-                pylast.NetworkError, 
-                pylast.MalformedResponseError) as e:
-            self.error(e)
+        def handle(self, *args):
+            try:
+                func(self, *args)
+                lastdb.commit()
+            except pylast.NetworkError as e:
+                self.errnum -= 1
+                LOGGER.error("%s. %d strikes left." % (e, self.errnum))
+            except (pylast.WSError, pylast.MalformedResponseError) as e:
+                self.errcnt += 1
+                LOGGER.error("%s. %d counted." % (e, self.errcnt))
+            finally:
+                lastdb.dbase.rollback()
+
+            if not self.errnum:
+                raise ScraperException
+        return handle
 
     def _scrape_artist(self, name):
         LOGGER.info("Found new artist: %s.", name)
@@ -90,6 +106,7 @@ class Scraper(object):
         LOGGER.debug("Adding user %s.", user)
         return lastdb.Users.create( **values ).id
 
+    @_commit_or_roll
     def _scrape_users(self, username, users, neighbours):
         """ Wrapped function to store user and explore neighbours """
         LOGGER.info("Processing username %s.", username)
@@ -117,6 +134,7 @@ class Scraper(object):
             assert row['artist'] == artistcache['']
             lastdb.WeeklyArtistChart.create( **row )
                
+    @_commit_or_roll
     def _scrape_weeks(self, username, userid, weeklist, artistcache):
         """ Populating weekly charts for single user """
         user = self.network.get_user(username)
@@ -132,17 +150,6 @@ class Scraper(object):
             if weekfrom not in weeksdone:
                 self._scrape_week(user, userid, weekfrom, weekto, artistcache)
 
-    def error(self, errmsg):
-        """ Print error message and keep count of errors.
-            If threshold exceeded, quit.
-        """
-        self.errnum -= 1
-        LOGGER.error(errmsg)
-        lastdb.dbase.rollback()
-        if not self.errnum:
-            LOGGER.warning("Exiting due to excess errors.")
-            raise Exception
-
     def populate_charts(self, datefmt, datematch):
         """ From user list in db, import weekly charts for matching dates.
             Will keep try to re-import weeks which do not exist, i.e. because
@@ -152,7 +159,7 @@ class Scraper(object):
         weeklist = self._get_weeks(datefmt, datematch)
         
         for dbuser in lastdb.Users.select():
-            self._scrape( self._scrape_weeks, (dbuser.name, dbuser.id, weeklist, artists) )
+            self._scrape_weeks(dbuser.name, dbuser.id, weeklist, artists)
 
     def populate_tags(self):
         """ Insert all tags for all artists """
@@ -173,8 +180,7 @@ class Scraper(object):
                     username = random.choice(visited.keys())
                     break
                 username = unvisited.pop()
-                
-            self._scrape( self._scrape_users, (username, visited, unvisited) )
+            self._scrape_users(username, visited, unvisited)
 
 
 def parse_args():
@@ -218,10 +224,10 @@ def main():
     lastdb.load(args.db)
     scraper = Scraper(args.api_key)
     try:
-        scraper.populate_users('RJ', 50)
+        scraper.populate_users('RJ', 100000)
         scraper.populate_charts('%Y-%W','2013-01')
         scraper.populate_tags()
-    except:
+    except ScraperException:
         lastdb.dbase.rollback()
         lastdb.dbase.close()
 
