@@ -14,7 +14,6 @@ import random
 
 API_KEY_VAR = "LAST_FM_API_PKEY"
 
-
 LOGGER = logging.getLogger('scrapefm')
 
 class ScraperException(Exception):
@@ -227,7 +226,7 @@ def main():
         scraper.populate_users('RJ', 100000)
         scraper.populate_charts('%Y-%W','2013-01')
         scraper.populate_tags()
-    except ScraperException:
+    except (ScraperException, KeyboardInterrupt):
         lastdb.dbase.rollback()
         lastdb.dbase.close()
 
