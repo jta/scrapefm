@@ -161,8 +161,6 @@ class Scraper(object):
         visited   = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
         queue     = visited.keys()
         unvisited = set()
-        while queue[-1] != 'MattyWeddo':
-            queue.pop()
         while queue:
             username = queue.pop()
             for new in self._friend_discovery(username, visited, 10000):
@@ -241,7 +239,7 @@ def main():
     scraper = Scraper(args.api_key)
     try:
         scraper.populate_users('RJ', 20)
-        #scraper.populate_friends()
+        scraper.populate_friends()
         scraper.populate_charts('%Y-%m','2013-01')
         scraper.populate_tags()
     except (ScraperException, KeyboardInterrupt):
