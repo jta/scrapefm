@@ -2,6 +2,7 @@ import sqlite3
 from peewee import *
 
 dbase = SqliteDatabase(None)
+char_max_length = 0
 
 class BaseModel(Model):
     class Meta:
@@ -14,9 +15,10 @@ class Users(BaseModel):
     country = CharField(default='')
     gender  = CharField(default='')
     playcount = IntegerField(default=0)
+    subscriber = BooleanField(default=False)
 
 class Artists(BaseModel):
-    name = CharField()
+    name = TextField()
     playcount = IntegerField(default=0)
     tagcount = IntegerField(default=0)
 
@@ -36,6 +38,7 @@ class WeeklyArtistChart(BaseModel):
 class ArtistTags(BaseModel):
     artist = ForeignKeyField(Artists)
     tag = ForeignKeyField(Tags)
+    count = IntegerField()
 
 
 def commit():
