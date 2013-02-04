@@ -4,7 +4,6 @@
 Author: João Taveira Araújo (first second at gmail / @jta)
 """
 import argparse
-import collections
 from datetime import datetime
 import lastdb
 import logging
@@ -22,9 +21,11 @@ class ScraperException(Exception):
 
 class Scraper(object):
     """ Use Last.fm API to retrieve data to local database. """
-    ERRLIM = 10
-    COMLIM = 100
-    def __init__(self, api_key):
+    ERRLIM = 10     # errors before quitting
+    COMLIM = 100    # outstanding transactions before commit
+
+    def __init__(self, dbname, api_key):
+        lastdb.load(dbname)
         self.network = pylast.LastFMNetwork(api_key = api_key)
         self.network.enable_caching()
         self.errcnt = 0
@@ -52,10 +53,10 @@ class Scraper(object):
                 if not self.commit % self.COMLIM:
                     LOGGER.info("Commit number %d", self.commit / self.COMLIM)
                     lastdb.commit()
+
             if self.errcnt >= self.ERRLIM:
                 raise ScraperException
             return retval
-
         return handle
 
     @_commit_or_roll
@@ -239,9 +240,8 @@ def main():
     """ Main entry point
     """
     args    = parse_args()
-
-    lastdb.load(args.db)
-    scraper = Scraper(args.api_key)
+    scraper = Scraper(args.db, args.api_key)
+    
     try:
         scraper.populate_users('RJ', 100000)
         #scraper.populate_friends()
