@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-Author: João Taveira Araújo (first second at gmail / @jta)
+""" Author: João Taveira Araújo (first second at gmail / @jta)
+    scrapefm.py: Last.fm scraper
 """
 import argparse
 from datetime import datetime
@@ -25,7 +25,7 @@ class Scraper(object):
     COMLIM = 100    # outstanding transactions before commit
 
     def __init__(self, dbname, api_key):
-        lastdb.load(dbname)
+        self.db = lastdb.load(dbname)
         self.network = pylast.LastFMNetwork(api_key = api_key)
         self.network.enable_caching()
         self.errcnt = 0
@@ -47,12 +47,12 @@ class Scraper(object):
                     pylast.MalformedResponseError) as e:
                 self.errcnt += 1
                 LOGGER.error("%s. %d errors so far." % (e, self.errcnt))
-                lastdb.dbase.rollback()
+                self.db.rollback()
             else:
                 self.commit += 1
                 if not self.commit % self.COMLIM:
                     LOGGER.info("Commit number %d", self.commit / self.COMLIM)
-                    lastdb.commit()
+                    self.db.commit()
 
             if self.errcnt >= self.ERRLIM:
                 raise ScraperException
@@ -140,6 +140,11 @@ class Scraper(object):
             assert row['artist'] == artistcache['']
             lastdb.WeeklyArtistChart.create( **row )
                
+    def close(self):
+        """ Close database, rolling back any uncommitted changes. """
+        self.db.rollback()
+        self.db.close()
+
     def populate_charts(self, datefmt, datematch):
         """ From user list in db, import weekly charts for matching dates.
             Will keep try to re-import weeks which do not exist, i.e. because
@@ -262,8 +267,8 @@ def main():
         scraper.populate_charts('%Y-%m','2013-01')
         scraper.populate_tags()
     except (ScraperException, KeyboardInterrupt):
-        lastdb.dbase.rollback()
-        lastdb.dbase.close()
+        pass
+    scraper.close()
 
 if __name__ == "__main__":
     main()

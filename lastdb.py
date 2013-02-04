@@ -1,56 +1,60 @@
+# -*- coding: utf-8 -*-
+""" lastdb.py: Relational model for Last.fm scrape.
+"""
 import sqlite3
-from peewee import *
+import peewee
 
-dbase = SqliteDatabase(None)
-char_max_length = 0
+DBASE = peewee.SqliteDatabase(None)
 
-class BaseModel(Model):
+class BaseModel(peewee.Model):
+    """ All models inherit base. """
     class Meta:
-        database = dbase
+        """ Link all models to database. """
+        database = DBASE
 
 class Users(BaseModel):
-    id   = IntegerField(primary_key=True)
-    name = CharField()
-    age  = IntegerField(default=0)
-    country = CharField(default='')
-    gender  = CharField(default='')
-    playcount = IntegerField(default=0)
-    subscriber = BooleanField(default=False)
+    """ Last.fm user table. """
+    id          = peewee.IntegerField(primary_key=True)
+    name        = peewee.CharField()
+    age         = peewee.IntegerField(default=0)
+    country     = peewee.CharField(default='')
+    gender      = peewee.CharField(default='')
+    playcount   = peewee.IntegerField(default=0)
+    subscriber  = peewee.BooleanField(default=False)
 
 class Artists(BaseModel):
-    name = TextField()
-    playcount = IntegerField(default=0)
-    tagcount = IntegerField(default=0)
+    """ Last.fm artist table. """
+    name        = peewee.TextField()
+    playcount   = peewee.IntegerField(default=0)
+    tagcount    = peewee.IntegerField(default=0)
 
 class Tags(BaseModel):
-    name = CharField()
+    """ Tags table. """
+    name        = peewee.CharField()
 
 class Friends(BaseModel):
-    a = ForeignKeyField(Users)
-    b = ForeignKeyField(Users)
+    """ Friendship edges. """
+    a = peewee.ForeignKeyField(Users)
+    b = peewee.ForeignKeyField(Users)
 
 class WeeklyArtistChart(BaseModel):
-    weekfrom = CharField()
-    user = ForeignKeyField(Users)
-    artist = ForeignKeyField(Artists)
-    playcount = IntegerField()
+    """ Friendship edges. """
+    weekfrom    = peewee.CharField()
+    user        = peewee.ForeignKeyField(Users)
+    artist      = peewee.ForeignKeyField(Artists)
+    playcount   = peewee.IntegerField()
 
 class ArtistTags(BaseModel):
-    artist = ForeignKeyField(Artists)
-    tag = ForeignKeyField(Tags)
-    count = IntegerField()
-
-
-def commit():
-    dbase.commit()
-
+    """ Tags associated to artist. """
+    artist      = peewee.ForeignKeyField(Artists)
+    tag         = peewee.ForeignKeyField(Tags)
+    count       = peewee.IntegerField()
 
 def load(dbname):
-    """ Create tables if necessary
-    """
-    dbase.init(dbname)
-    dbase.set_autocommit(False)
-    dbase.connect()
+    """ Create tables if necessary """
+    DBASE.init(dbname)
+    DBASE.set_autocommit(False)
+    DBASE.connect()
     Users.create_table(fail_silently=True)
 
     # we have dud artist to populate chart row
@@ -65,5 +69,4 @@ def load(dbname):
     WeeklyArtistChart.create_table(fail_silently=True)
     ArtistTags.create_table(fail_silently=True)
 
-
-    return dbase
+    return DBASE
