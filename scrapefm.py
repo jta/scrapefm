@@ -185,22 +185,24 @@ class Scraper(object):
         visited   = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
         # set of users (obj) yet to be visited
         username  = seed
-        unvisited = set([])
+        incoming  = []
 
         while len(visited) < maxlimit:
             while username in visited:
-                if not len(unvisited):
+                if not len(incoming):
                     username = random.choice(visited.keys())
                     break
-                username = unvisited.pop()
+                username = incoming.pop()
 
             if username not in visited:
                 visited[username] = self._scrape_user(username)
 
-            if not len(unvisited):
-                for new in self._friend_discovery(username, visited):
-                    unvisited.add(new)
-                unvisited = set(random.sample(unvisited, min(len(unvisited), 10)))
+            if not len(incoming):
+                for new in self._friend_discovery(username, visited, 1000):
+                    incoming.append(new)
+                # get ten random neighbours
+                random.shuffle(incoming)
+                incoming = incoming[:10]
 
 
 def parse_args():
@@ -244,7 +246,7 @@ def parse_args():
         LOGGER.setLevel(logging.INFO)
 
     if not args.api_key:
-        raise Exception
+        parser.error('No API key provided in options or $%s' % API_KEY_VAR)
 
     return args
 
