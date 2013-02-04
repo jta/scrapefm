@@ -216,9 +216,19 @@ def parse_args():
                         help='Last.fm API public key. Alternatively can \
                               be supplied through $%s variable' % API_KEY_VAR)
 
-    parser.add_argument('--debug', dest='debug',
+    parser.add_argument('--seed', dest='seed',
+                        action='store', type=str, default='RJ',
+                        help='Username for starting point to graph scraping.')
+
+    group = parser.add_mutually_exclusive_group()
+
+    group.add_argument('--debug', dest='debug',
                         action='store_true', default=False,
-                        help='print lots of debug information')
+                        help='Print debug information')
+
+    group.add_argument('--quiet', dest='quiet',
+                        action='store_true', default=False,
+                        help='Print debug information')
 
     parser.add_argument("db", type=str,
                         help="Database to be written to.")
@@ -228,6 +238,8 @@ def parse_args():
     logging.basicConfig()
     if args.debug:
         LOGGER.setLevel(logging.DEBUG)
+    elif args.quiet:
+        LOGGER.setLevel(logging.ERROR)
     else:
         LOGGER.setLevel(logging.INFO)
 
@@ -241,9 +253,9 @@ def main():
     """
     args    = parse_args()
     scraper = Scraper(args.db, args.api_key)
-    
+
     try:
-        scraper.populate_users('RJ', 100000)
+        scraper.populate_users(args.seed, 100000)
         #scraper.populate_friends()
         scraper.populate_charts('%Y-%m','2013-01')
         scraper.populate_tags()
