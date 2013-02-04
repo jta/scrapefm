@@ -23,10 +23,12 @@ class ScraperException(Exception):
 class Scraper(object):
     """ Use Last.fm API to retrieve data to local database. """
     ERRLIM = 10
+    COMLIM = 100
     def __init__(self, api_key):
         self.network = pylast.LastFMNetwork(api_key = api_key)
         self.network.enable_caching()
         self.errcnt = 0
+        self.commit = 0
 
     def _commit_or_roll(func):
         """ Commit to db or rollback.
@@ -46,7 +48,10 @@ class Scraper(object):
                 LOGGER.error("%s. %d errors so far." % (e, self.errcnt))
                 lastdb.dbase.rollback()
             else:
-                lastdb.commit()
+                self.commit += 1
+                if not self.commit % self.COMLIM:
+                    LOGGER.info("Commit number %d", self.commit / self.COMLIM)
+                    lastdb.commit()
             if self.errcnt >= self.ERRLIM:
                 raise ScraperException
             return retval
@@ -238,8 +243,8 @@ def main():
     lastdb.load(args.db)
     scraper = Scraper(args.api_key)
     try:
-        scraper.populate_users('RJ', 20)
-        scraper.populate_friends()
+        scraper.populate_users('RJ', 100000)
+        #scraper.populate_friends()
         scraper.populate_charts('%Y-%m','2013-01')
         scraper.populate_tags()
     except (ScraperException, KeyboardInterrupt):
