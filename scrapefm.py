@@ -103,7 +103,7 @@ class Scraper(object):
         user   = self.network.get_user(username)
         
         # hardwire function so that fields in lastdb.Users table map
-        # to respective get function in pylast.Users class
+        # to get_* function in pylast.Users class
         user.get_subscriber = user.is_subscriber
         values = {}
         for field in lastdb.Users._meta.get_fields():
@@ -133,7 +133,7 @@ class Scraper(object):
                
     def close(self):
         """ Close database, rolling back any uncommitted changes. """
-        self.db.rollback()
+        self.db.commit()
         self.db.close()
 
     def populate_charts(self, datefmt, datematch):
@@ -201,19 +201,23 @@ def parse_args():
                         help='Last.fm API public key. Alternatively can \
                               be supplied through $%s variable' % API_KEY_VAR)
 
-    parser.add_argument('--seed', dest='seed',
+    parser.add_argument('--seed', dest='username',
                         action='store', type=str, default='RJ',
-                        help='Username for starting point to graph scraping.')
+                        help='Starting point for graph traversal.')
+
+    parser.add_argument('--users', dest='limit',
+                        action='store', type=int, default=100,
+                        help='Maximum number of users to scrape.')
 
     group = parser.add_mutually_exclusive_group()
 
     group.add_argument('--debug', dest='debug',
                         action='store_true', default=False,
-                        help='Print debug information')
+                        help='Print debug information.')
 
     group.add_argument('--quiet', dest='quiet',
                         action='store_true', default=False,
-                        help='Print debug information')
+                        help='Output errors only.')
 
     parser.add_argument("db", type=str,
                         help="Database to be written to.")
@@ -236,16 +240,16 @@ def parse_args():
 def main():
     """ Main entry point
     """
-    args    = parse_args()
-    scraper = Scraper(args.db, args.api_key)
+    options = parse_args()
+    scraper = Scraper(options.db, options.api_key)
 
     try:
-        scraper.populate_users(args.seed, 100000)
+        scraper.populate_users(options.username, options.limit)
         #scraper.populate_friends()
         scraper.populate_charts('%Y-%m','2013-01')
         scraper.populate_tags()
     except (ScraperException, KeyboardInterrupt):
-        pass
+        scraper.db.rollback()
     scraper.close()
 
 if __name__ == "__main__":
