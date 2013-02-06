@@ -167,7 +167,6 @@ class Scraper(object):
                 if weekfrom not in weeksdone:
                     self._scrape_week(username, userid, weekfrom, weekto, artists)
 
-
     def populate_friends(self):
         visited   = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
         queue     = visited.keys()
@@ -183,32 +182,20 @@ class Scraper(object):
         """ Insert all tags for all artists """
         pass
 
-    def populate_users(self, seed, maxlimit = 100000):
+    def populate_users(self, seed, maxlimit):
         """ Start from seed user and scrape info by following social graph.
         """
-        # set of inspected usernames
-        visited   = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
-        # set of users (obj) yet to be visited
-        username  = seed
-        incoming  = []
+        scraped = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
+        queued  = [seed]
+        sample  = lambda x: random.sample(x, min(len(x), 10))
 
-        while len(visited) < maxlimit:
-            while username in visited:
-                if not len(incoming):
-                    username = random.choice(visited.keys())
-                    break
-                username = incoming.pop()
-
-            if username not in visited:
-                visited[username] = self._scrape_user(username)
-
-            if not len(incoming):
-                for new in self._friend_discovery(username, visited, 1000):
-                    incoming.append(new)
-                # get ten random neighbours
-                random.shuffle(incoming)
-                incoming = incoming[:10]
-
+        while len(scraped) < maxlimit:
+            while not len(queued):
+                username = random.choice(scraped.keys())
+                queued   = sample(self._friend_discovery(username, scraped, 1000))
+            username = queued.pop()
+            if username not in scraped:
+                scraped[username] = self._scrape_user(username)
 
 def parse_args():
     """ Parse command line options.
