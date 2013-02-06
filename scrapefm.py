@@ -98,25 +98,16 @@ class Scraper(object):
 
     @_commit_or_roll
     def _scrape_user(self, username):
-        """ Scrapes all info associated to username into database.
-            Returns user id.
-        """
+        """ Scrape user info and return ID. """
+        LOGGER.info("Adding user %s.", username)
         user   = self.network.get_user(username)
-
-        # fields in lastdb.Users table maps to respective get function
-        # in pylast.Users class, except for subscriber which we hardwire
+        
+        # hardwire function so that fields in lastdb.Users table map
+        # to respective get function in pylast.Users class
         user.get_subscriber = user.is_subscriber
         values = {}
         for field in lastdb.Users._meta.get_fields():
-            values[field.name] = getattr(user, 'get_%s' % field.name)() 
-
-        # annoyingly get_country returns class rather than string.
-        if not values['country'].get_name():
-            values['country'] = None
-
-        # filter out fields with no values and let defaults take over.
-        values = dict((k, v) for k, v in values.items() if v)
-        LOGGER.info("Adding user %s.", user)
+            values[field.name] = field.db_value(getattr(user, 'get_%s' % field.name)())
         return lastdb.Users.create( **values ).id
 
     @_commit_or_roll
