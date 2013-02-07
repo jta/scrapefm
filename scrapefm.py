@@ -24,9 +24,11 @@ class Scraper(object):
     ERRLIM = 10     # errors before quitting
     COMLIM = 100    # outstanding transactions before commit
 
-    def __init__(self, dbname, api_key):
-        self.db = lastdb.load(dbname)
-        self.network = pylast.LastFMNetwork(api_key = api_key)
+    def __init__(self, options):
+
+        self.__dict__ = options.__dict__
+        self.db = lastdb.load(options.db)
+        self.network = pylast.LastFMNetwork(api_key = self.api_key)
         self.network.enable_caching()
         self.errcnt = 0
         self.commit = 0
@@ -59,25 +61,25 @@ class Scraper(object):
             return retval
         return handle
 
-    @_commit_or_roll
-    def _friend_discovery(self, username, users, maxfriends = 50):
+    def get_friends(self, user):
+        return [ friend.name for friend in user.get_friends(self.maxfriends) ]
+
+
+    def _connect(self, user, userid, users):
         """ Given user, explore connected nodes.
             If a neighbour node has already been seen, add edge to friend table.
             Otherwise, return unexplored neighbour.
         """
-        user = self.network.get_user(username)
-        for friend in user.get_friends(maxfriends):
-            if friend.name in users:
-                ordered = dict( zip(('a', 'b'), 
-                                sorted([users[username], users[friend.name]])) )
-                try:
-                    lastdb.Friends.get( **ordered )
-                except lastdb.Friends.DoesNotExist:
-                    LOGGER.debug("Connecting %s with %s.", *ordered.values())
-                    lastdb.Friends.create( **ordered )
-            else:
-                yield friend.name
-
+        for friend in self.get_friends(user):
+            if friend not in users:
+                continue
+            ordered = dict( zip(('a', 'b'), sorted([ userid, users[friend] ])) )
+            try:
+                lastdb.Friends.get( **ordered )
+            except lastdb.Friends.DoesNotExist:
+                LOGGER.debug("Connecting %s with %s.", *ordered.values())
+                lastdb.Friends.create( **ordered )
+    
     def _get_weeks(self, datefmt, datematch):
         """ Rather than query week list for each user, nick list from one of
             longest serving users (RJ -> founder) and filter
@@ -97,7 +99,7 @@ class Scraper(object):
         return lastdb.Artists.create(name = name).id
 
     @_commit_or_roll
-    def _scrape_user(self, username):
+    def scrape_user(self, username, users):
         """ Scrape user info and return ID. """
         LOGGER.info("Adding user %s.", username)
         user   = self.network.get_user(username)
@@ -108,7 +110,19 @@ class Scraper(object):
         values = {}
         for field in lastdb.Users._meta.get_fields():
             values[field.name] = field.db_value(getattr(user, 'get_%s' % field.name)())
-        return lastdb.Users.create( **values ).id
+
+        userid  = lastdb.Users.create( **values ).id
+
+        # link neighbours
+        if self.do_connect:
+            self._connect(user, userid, users)
+
+        # get weekly chart
+        if self.do_weekly:
+        
+
+        return userid
+
 
     @_commit_or_roll
     def _scrape_week(self, username, userid, weekfrom, weekto, artistcache):
@@ -158,35 +172,23 @@ class Scraper(object):
                 if weekfrom not in weeksdone:
                     self._scrape_week(username, userid, weekfrom, weekto, artists)
 
-    def populate_friends(self):
-        visited   = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
-        queue     = visited.keys()
-        unvisited = set()
-        while queue:
-            username = queue.pop()
-            for new in self._friend_discovery(username, visited, 10000):
-                unvisited.add(new)
-            LOGGER.debug("%s friends mapped. %d users not covered.", username, len(unvisited))
-
-
-    def populate_tags(self):
-        """ Insert all tags for all artists """
-        pass
-
-    def populate_users(self, seed, maxlimit):
+    def run(self):
         """ Start from seed user and scrape info by following social graph.
         """
         scraped = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
-        queued  = [seed]
+        queued  = [ self.username ]
         sample  = lambda x: random.sample(x, min(len(x), 10))
 
-        while len(scraped) < maxlimit:
+        while len(scraped) < self.limit:
             while not len(queued):
-                username = random.choice(scraped.keys())
-                queued   = sample(self._friend_discovery(username, scraped, 1000))
+                # get a random user from already scraped and sample from neighbours.
+                user   = self.network.get_user( random.choice(scraped.keys()) )
+                queued = sample( self.get_friends(user) )
             username = queued.pop()
             if username not in scraped:
-                scraped[username] = self._scrape_user(username)
+                scraped[username] = self.scrape_user(username, scraped)
+
+        # get tags for popular artists?
 
 def parse_args():
     """ Parse command line options.
@@ -241,13 +243,16 @@ def main():
     """ Main entry point
     """
     options = parse_args()
-    scraper = Scraper(options.db, options.api_key)
+    scraper = Scraper(options)
+
+    options.maxfriends = 1000
+    options.do_connect = True
+    options.do_weekly  = True
 
     try:
-        scraper.populate_users(options.username, options.limit)
+        scraper.run()
         #scraper.populate_friends()
         scraper.populate_charts('%Y-%m','2013-01')
-        scraper.populate_tags()
     except (ScraperException, KeyboardInterrupt):
         scraper.db.rollback()
     scraper.close()
