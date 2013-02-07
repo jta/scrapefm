@@ -16,9 +16,9 @@ class Users(BaseModel):
     """ Last.fm user table. """
     id          = peewee.IntegerField(primary_key=True)
     name        = peewee.CharField()
-    age         = peewee.IntegerField(default=0)
-    country     = peewee.CharField(default='')
-    gender      = peewee.CharField(default='')
+    age         = peewee.IntegerField(null=True)
+    country     = peewee.CharField(null=True)
+    gender      = peewee.CharField(null=True)
     playcount   = peewee.IntegerField(default=0)
     subscriber  = peewee.BooleanField(default=False)
 
