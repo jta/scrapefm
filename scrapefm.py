@@ -58,8 +58,6 @@ class Scraper(object):
                     pass
         """
 
-
-
     def _commit_or_roll(func):
         """ Commit to db or rollback.
             Handles pylast.* exceptions gracefully. 
@@ -88,24 +86,8 @@ class Scraper(object):
             return retval
         return handle
 
-    def get_friends(self, user):
+    def _get_friends(self, user):
         return [ friend.name for friend in user.get_friends(self.maxfriends) ]
-
-    @classmethod
-    def _connect(cls, userid, friends, users):
-        """ Given user, explore connected nodes.
-            If a neighbour node has already been seen, add edge to friend table.
-            Otherwise, return unexplored neighbour.
-        """
-        for friend in friends:
-            if friend not in users:
-                continue
-            ordered = dict( zip(('a', 'b'), sorted([ userid, users[friend] ])) )
-            try:
-                lastdb.Friends.get( **ordered )
-            except lastdb.Friends.DoesNotExist:
-                LOGGER.debug("Connecting %s with %s.", *ordered.values())
-                lastdb.Friends.create( **ordered )
     
     @classmethod
     def _get_weeks(self, user, datefmt, datematch):
@@ -116,11 +98,26 @@ class Scraper(object):
             if pattern.match( unix_to_date(int(weekfrom)) ):
                 yield weekfrom, weekto
 
-    def _scrape_artist(self, name):
+    def scrape_artist(self, name):
         LOGGER.info("Found new artist: %s.", name)
         assert not lastdb.Artists.select()\
                         .where(lastdb.Artists.name == name).exists()
         return lastdb.Artists.create(name = name).id
+
+    def scrape_friends(self, user, userid):
+        """ Given user, explore connected nodes.
+            If a neighbour node has already been seen, add edge to friend table.
+            Otherwise, return unexplored neighbour.
+        """
+        for friend in self._get_friends(user):
+            if friend not in self.users:
+                continue
+            ordered = dict( zip(('a', 'b'), sorted([ userid, self.users[friend] ])) )
+            try:
+                lastdb.Friends.get( **ordered )
+            except lastdb.Friends.DoesNotExist:
+                LOGGER.debug("Connecting %s with %s.", *ordered.values())
+                lastdb.Friends.create( **ordered )
 
     @_commit_or_roll
     def scrape_user(self, username):
@@ -139,16 +136,15 @@ class Scraper(object):
 
         # link neighbours
         if self.do_connect:
-            self._connect( userid, self.get_friends(user), self.users )
+            self.scrape_friends(user, userid)
 
         # get weekly chart
-        if self.do_weekly:
-            for weekfrom, weekto in self.weeks:
-                self._scrape_week(user, userid, weekfrom, weekto)
+        for weekfrom, weekto in self.weeks:
+            self.scrape_week(user, userid, weekfrom, weekto)
         
         return userid
 
-    def _scrape_week(self, user, userid, weekfrom, weekto):
+    def scrape_week(self, user, userid, weekfrom, weekto):
         """ Scrape single week, inserting artists if not cached.  """
         LOGGER.debug("Scraping week %s for user %s.", weekfrom, user)
 
@@ -156,7 +152,7 @@ class Scraper(object):
 
         for artist, count in user.get_weekly_artist_charts(weekfrom, weekto):
             if artist.name not in self.artists:
-                self.artists[artist.name] = self._scrape_artist(artist.name)
+                self.artists[artist.name] = self.scrape_artist(artist.name)
             row.update({'artist': self.artists[artist.name], 'playcount': count})
             lastdb.WeeklyArtistChart.create( **row )
 
@@ -187,7 +183,7 @@ class Scraper(object):
             while not len(queue):
                 # sample neighbours from random scraped user.
                 user  = self.network.get_user( random.choice(scraped.keys()) )
-                queue = nsample( self.get_friends(user), 10 )
+                queue = nsample( self._get_friends(user), 10 )
             username = queue.pop()
             if username not in scraped:
                 scraped[username] = self.scrape_user(username)
@@ -248,7 +244,6 @@ def main():
     options = parse_args()
     options.maxfriends = 1000
     options.do_connect = True
-    options.do_weekly  = True
     options.datefmt    = "%Y-%m"
     options.datematch  = "2013-0?"
 
