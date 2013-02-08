@@ -21,8 +21,8 @@ class ScraperException(Exception):
 
 class Scraper(object):
     """ Use Last.fm API to retrieve data to local database. """
-    ERRLIM = 10     # errors before quitting
-    COMLIM = 100    # outstanding transactions before commit
+    ERRLIM = 100     # errors before quitting
+    COMLIM = 1    # outstanding transactions before commit
 
     def __init__(self, dbname, api_key):
         self.db = lastdb.load(dbname)
