@@ -43,8 +43,20 @@ class Scraper(object):
                                           self.datefmt,
                                           self.datematch))
 
-        # username -> userid mapping for all scraped users.
-        self.users = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
+        # name -> id mapping for all scraped users and artists.
+        self.users   = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
+        self.artists = dict([ (a.name, a.id) for a in lastdb.Artists.select() ])
+
+        
+
+        """
+           try:
+                    rows = lastdb.WeeklyArtistChart.select()\
+                               .where(lastdb.WeeklyArtistChart.user == userid)
+                    weeksdone.update([row.weekfrom for row in rows])
+                except lastdb.WeeklyArtistChart.DoesNotExist:
+                    pass
+        """
 
 
 
@@ -131,58 +143,32 @@ class Scraper(object):
 
         # get weekly chart
         if self.do_weekly:
-            pass
+            for weekfrom, weekto in self.weeks:
+                self._scrape_week(user, userid, weekfrom, weekto)
         
         return userid
 
-
-    @_commit_or_roll
-    def _scrape_week(self, username, userid, weekfrom, weekto, artistcache):
+    def _scrape_week(self, user, userid, weekfrom, weekto):
         """ Scrape single week, inserting artists if not cached.  """
-        LOGGER.debug("Scraping week %s for user %s.", weekfrom, username)
-        user   = self.network.get_user(username)
+        LOGGER.debug("Scraping week %s for user %s.", weekfrom, user)
 
-        row = { 'weekfrom': weekfrom, 'user': userid, 
-                'artist': artistcache[''], 'playcount': 0 }
+        row = { 'weekfrom': weekfrom, 'user': userid }
 
         for artist, count in user.get_weekly_artist_charts(weekfrom, weekto):
-            if artist.name not in artistcache:
-                artistcache[artist.name] = self._scrape_artist(artist.name)
-            row['artist'] = artistcache[artist.name]
-            row['playcount'] = count
+            if artist.name not in self.artists:
+                self.artists[artist.name] = self._scrape_artist(artist.name)
+            row.update({'artist': self.artists[artist.name], 'playcount': count})
             lastdb.WeeklyArtistChart.create( **row )
 
-        if not row['playcount']:
-            LOGGER.debug("No chart, adding fake entry as placeholder.")
-            assert row['artist'] == artistcache['']
+        if 'artist' not in row:
+            LOGGER.debug("No chart, adding empty entry as placeholder.")
+            row.update({'artist': self.artists[''], 'playcount': 0})
             lastdb.WeeklyArtistChart.create( **row )
                
     def close(self):
         """ Close database, rolling back any uncommitted changes. """
         self.db.commit()
         self.db.close()
-
-    def populate_charts(self, datefmt, datematch):
-        """ From user list in db, import weekly charts for matching dates.
-            Will keep try to re-import weeks which do not exist, i.e. because
-            users did not scrobble.
-        """
-        artists  = dict([ (a.name, a.id) for a in lastdb.Artists.select() ])
-        weeklist = self._get_weeks(datefmt, datematch)
-        
-        for row in lastdb.Users.select():
-            username, userid = row.name, row.id
-            weeksdone = set()
-            try:
-                rows = lastdb.WeeklyArtistChart.select()\
-                           .where(lastdb.WeeklyArtistChart.user == userid)
-                weeksdone.update([row.weekfrom for row in rows])
-            except lastdb.WeeklyArtistChart.DoesNotExist:
-                pass
-
-            for weekfrom, weekto in weeklist:
-                if weekfrom not in weeksdone:
-                    self._scrape_week(username, userid, weekfrom, weekto, artists)
 
     def run(self):
         """ Start from seed user and scrape info by following social graph.
