@@ -25,8 +25,7 @@ class Scraper(object):
     COMLIM = 100    # outstanding transactions before commit
 
     def __init__(self, options):
-
-        self.__dict__ = options.__dict__
+        self.__dict__ = dict(options.__dict__.iteritems())
         self.db = lastdb.load(options.db)
         self.network = pylast.LastFMNetwork(api_key = self.api_key)
         self.network.enable_caching()
@@ -119,6 +118,7 @@ class Scraper(object):
 
         # get weekly chart
         if self.do_weekly:
+            pass
         
 
         return userid
@@ -175,6 +175,10 @@ class Scraper(object):
     def run(self):
         """ Start from seed user and scrape info by following social graph.
         """
+        import misc
+        misc.do_trace()
+
+
         scraped = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
         queued  = [ self.username ]
         sample  = lambda x: random.sample(x, min(len(x), 10))
@@ -243,12 +247,11 @@ def main():
     """ Main entry point
     """
     options = parse_args()
-    scraper = Scraper(options)
-
     options.maxfriends = 1000
     options.do_connect = True
     options.do_weekly  = True
 
+    scraper = Scraper(options)
     try:
         scraper.run()
         #scraper.populate_friends()
