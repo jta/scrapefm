@@ -79,15 +79,16 @@ class Scraper(object):
     def get_friends(self, user):
         return [ friend.name for friend in user.get_friends(self.maxfriends) ]
 
-    def _connect(self, user, userid):
+    @classmethod
+    def _connect(cls, userid, friends, users):
         """ Given user, explore connected nodes.
             If a neighbour node has already been seen, add edge to friend table.
             Otherwise, return unexplored neighbour.
         """
-        for friend in self.get_friends(user):
-            if friend not in self.users:
+        for friend in friends:
+            if friend not in users:
                 continue
-            ordered = dict( zip(('a', 'b'), sorted([ userid, self.users[friend] ])) )
+            ordered = dict( zip(('a', 'b'), sorted([ userid, users[friend] ])) )
             try:
                 lastdb.Friends.get( **ordered )
             except lastdb.Friends.DoesNotExist:
@@ -126,13 +127,12 @@ class Scraper(object):
 
         # link neighbours
         if self.do_connect:
-            self._connect(user, userid)
+            self._connect( userid, self.get_friends(user), self.users )
 
         # get weekly chart
         if self.do_weekly:
             pass
         
-
         return userid
 
 
@@ -188,19 +188,24 @@ class Scraper(object):
         """ Start from seed user and scrape info by following social graph.
         """
         scraped = self.users
-        queued  = [ self.username ]
-        sample  = lambda x: random.sample(x, min(len(x), 10))
+        queue   = []
+
+        # auxiliary function to sample at most n items from x
+        nsample = lambda x, n: random.sample(x, min(len(x), n))
+
+        # use seed if starting from scratch
+        if not len(scraped):
+            queue.append( self.username )
 
         while len(scraped) < self.limit:
-            while not len(queued):
-                # get a random user from already scraped and sample from neighbours.
-                user   = self.network.get_user( random.choice(scraped.keys()) )
-                queued = sample( self.get_friends(user) )
-            username = queued.pop()
+            while not len(queue):
+                # sample neighbours from random scraped user.
+                user  = self.network.get_user( random.choice(scraped.keys()) )
+                queue = nsample( self.get_friends(user), 10 )
+            username = queue.pop()
             if username not in scraped:
                 scraped[username] = self.scrape_user(username)
 
-        # get tags for popular artists?
 
 def parse_args():
     """ Parse command line options.
@@ -256,7 +261,7 @@ def main():
     """
     options = parse_args()
     options.maxfriends = 1000
-    options.do_connect = False
+    options.do_connect = True
     options.do_weekly  = True
     options.datefmt    = "%Y-%m"
     options.datematch  = "2013-0?"
