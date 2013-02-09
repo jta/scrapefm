@@ -5,8 +5,8 @@
 """
 import argparse
 from datetime import datetime
-import lastdb
 import logging
+import peewee
 import pylast
 import os
 import random
@@ -16,9 +16,56 @@ import types
 API_KEY_VAR = "LAST_FM_API_PKEY"
 
 LOGGER = logging.getLogger('scrapefm')
+DBASE  = peewee.SqliteDatabase(None)
+
+class BaseModel(peewee.Model):
+    """ All models inherit base. """
+    class Meta:
+        """ Link all models to database. """
+        database = DBASE
+
+class Users(BaseModel):
+    """ Last.fm user table. """
+    id          = peewee.IntegerField(primary_key=True)
+    name        = peewee.CharField()
+    age         = peewee.IntegerField(null=True)
+    country     = peewee.CharField(null=True)
+    gender      = peewee.CharField(null=True)
+    playcount   = peewee.IntegerField(default=0)
+    subscriber  = peewee.BooleanField(default=False)
+
+class Artists(BaseModel):
+    """ Last.fm artist table. """
+    name        = peewee.TextField()
+    playcount   = peewee.IntegerField(default=0)
+    tagcount    = peewee.IntegerField(default=0)
+
+class Tags(BaseModel):
+    """ Tags table. """
+    name        = peewee.CharField()
+
+class Friends(BaseModel):
+    """ Friendship edges. """
+    a = peewee.ForeignKeyField(Users)
+    b = peewee.ForeignKeyField(Users)
+
+class WeeklyArtistChart(BaseModel):
+    """ Friendship edges. """
+    weekfrom    = peewee.CharField()
+    user        = peewee.ForeignKeyField(Users)
+    artist      = peewee.ForeignKeyField(Artists)
+    playcount   = peewee.IntegerField()
+
+class ArtistTags(BaseModel):
+    """ Tags associated to artist. """
+    artist      = peewee.ForeignKeyField(Artists)
+    tag         = peewee.ForeignKeyField(Tags)
+    count       = peewee.IntegerField()
+
 
 class ScraperException(Exception):
     """ Raised if too many internal errors from Last.fm API """
+
 
 class Scraper(object):
     """ Use Last.fm API to retrieve data to local database. """
@@ -34,9 +81,28 @@ class Scraper(object):
 
         self._load()
 
+    def _load_db(dbname):
+        """ Create tables if necessary """
+        DBASE.init(dbname)
+        DBASE.set_autocommit(False)
+        DBASE.connect()
+        Users.create_table(fail_silently=True)
+        # we have dud artist to populate chart row in the absence of scrobbles
+        try:
+            Artists.create_table()
+            Artists.create(name = '') 
+        except sqlite3.OperationalError:
+            pass
+        Tags.create_table(fail_silently=True)
+        Friends.create_table(fail_silently=True)
+        WeeklyArtistChart.create_table(fail_silently=True)
+        ArtistTags.create_table(fail_silently=True)
+        return DBASE
+
+
     def _load(self):
         """ Load information from database. """
-        self.db    = lastdb.load(self.db)
+        self.db    = self._load_db(self.db)
 
         # get all possible weeks matching desired pattern.
         self.weeks = list(self._get_weeks(self.network.get_user('RJ'), 
@@ -44,17 +110,17 @@ class Scraper(object):
                                           self.datematch))
 
         # name -> id mapping for all scraped users and artists.
-        self.users   = dict([ (u.name, u.id) for u in lastdb.Users.select() ])
-        self.artists = dict([ (a.name, a.id) for a in lastdb.Artists.select() ])
+        self.users   = dict([ (u.name, u.id) for u in Users.select() ])
+        self.artists = dict([ (a.name, a.id) for a in Artists.select() ])
 
         
 
         """
            try:
-                    rows = lastdb.WeeklyArtistChart.select()\
-                               .where(lastdb.WeeklyArtistChart.user == userid)
+                    rows = WeeklyArtistChart.select()\
+                               .where(WeeklyArtistChart.user == userid)
                     weeksdone.update([row.weekfrom for row in rows])
-                except lastdb.WeeklyArtistChart.DoesNotExist:
+                except WeeklyArtistChart.DoesNotExist:
                     pass
         """
 
@@ -100,9 +166,8 @@ class Scraper(object):
 
     def scrape_artist(self, name):
         LOGGER.info("Found new artist: %s.", name)
-        assert not lastdb.Artists.select()\
-                        .where(lastdb.Artists.name == name).exists()
-        return lastdb.Artists.create(name = name).id
+        assert not Artists.select().where(Artists.name == name).exists()
+        return Artists.create(name = name).id
 
     def scrape_friends(self, user, userid):
         """ Given user, explore connected nodes.
@@ -114,10 +179,10 @@ class Scraper(object):
                 continue
             ordered = dict( zip(('a', 'b'), sorted([ userid, self.users[friend] ])) )
             try:
-                lastdb.Friends.get( **ordered )
-            except lastdb.Friends.DoesNotExist:
+                Friends.get( **ordered )
+            except Friends.DoesNotExist:
                 LOGGER.debug("Connecting %s with %s.", *ordered.values())
-                lastdb.Friends.create( **ordered )
+                Friends.create( **ordered )
 
     @_commit_or_roll
     def scrape_user(self, username):
@@ -125,14 +190,14 @@ class Scraper(object):
         LOGGER.info("Adding user %s.", username)
         user   = self.network.get_user(username)
         
-        # hardwire function so that fields in lastdb.Users table map
+        # hardwire function so that fields in Users table map
         # to get_* function in pylast.Users class
         user.get_subscriber = user.is_subscriber
         values = {}
-        for field in lastdb.Users._meta.get_fields():
+        for field in Users._meta.get_fields():
             values[field.name] = field.db_value(getattr(user, 'get_%s' % field.name)())
 
-        userid  = lastdb.Users.create( **values ).id
+        userid  = Users.create( **values ).id
 
         # link neighbours
         if self.do_connect:
@@ -154,12 +219,12 @@ class Scraper(object):
             if artist.name not in self.artists:
                 self.artists[artist.name] = self.scrape_artist(artist.name)
             row.update({'artist': self.artists[artist.name], 'playcount': count})
-            lastdb.WeeklyArtistChart.create( **row )
+            WeeklyArtistChart.create( **row )
 
         if 'artist' not in row:
             LOGGER.debug("No chart, adding empty entry as placeholder.")
             row.update({'artist': self.artists[''], 'playcount': 0})
-            lastdb.WeeklyArtistChart.create( **row )
+            WeeklyArtistChart.create( **row )
                
     def close(self):
         """ Close database, rolling back any uncommitted changes. """
