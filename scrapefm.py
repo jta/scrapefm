@@ -79,50 +79,30 @@ class Scraper(object):
         self.errcnt = 0
         self.commit = 0
 
-        self._load()
+        self.load_db()
 
-    def _load_db(dbname):
+    def load_db(self):
         """ Create tables if necessary """
-        DBASE.init(dbname)
+        DBASE.init(self.db)
         DBASE.set_autocommit(False)
         DBASE.connect()
         Users.create_table(fail_silently=True)
-        # we have dud artist to populate chart row in the absence of scrobbles
+        Artists.create_table(fail_silently=True)
         try:
-            Artists.create_table()
+            Artists.select().where(Artists.name == '')
+        except Artists.DoesNotExist:
+            # dud artist to populate chart row in absence of scrobbles
             Artists.create(name = '') 
-        except sqlite3.OperationalError:
-            pass
         Tags.create_table(fail_silently=True)
         Friends.create_table(fail_silently=True)
         WeeklyArtistChart.create_table(fail_silently=True)
         ArtistTags.create_table(fail_silently=True)
-        return DBASE
 
-
-    def _load(self):
-        """ Load information from database. """
-        self.db    = self._load_db(self.db)
-
-        # get all possible weeks matching desired pattern.
-        self.weeks = list(self._get_weeks(self.network.get_user('RJ'), 
-                                          self.datefmt,
-                                          self.datematch))
-
+        self.db = DBASE
         # name -> id mapping for all scraped users and artists.
         self.users   = dict([ (u.name, u.id) for u in Users.select() ])
         self.artists = dict([ (a.name, a.id) for a in Artists.select() ])
-
-        
-
-        """
-           try:
-                    rows = WeeklyArtistChart.select()\
-                               .where(WeeklyArtistChart.user == userid)
-                    weeksdone.update([row.weekfrom for row in rows])
-                except WeeklyArtistChart.DoesNotExist:
-                    pass
-        """
+        return 
 
     def _commit_or_roll(func):
         """ Commit to db or rollback.
@@ -163,6 +143,22 @@ class Scraper(object):
         for weekfrom, weekto in user.get_weekly_chart_dates():
             if pattern.match( unix_to_date(int(weekfrom)) ):
                 yield weekfrom, weekto
+
+    def rescrape(self):
+        """ Load information from database. """
+        # get all possible weeks matching desired pattern.
+        self.weeks = list(self._get_weeks(self.network.get_user('RJ'), 
+                                          self.datefmt,
+                                          self.datematch))
+
+        """
+           try:
+                    rows = WeeklyArtistChart.select()\
+                               .where(WeeklyArtistChart.user == userid)
+                    weeksdone.update([row.weekfrom for row in rows])
+                except WeeklyArtistChart.DoesNotExist:
+                    pass
+        """
 
     def scrape_artist(self, name):
         LOGGER.info("Found new artist: %s.", name)
@@ -234,6 +230,10 @@ class Scraper(object):
     def run(self):
         """ Start from seed user and scrape info by following social graph.
         """
+
+        # verify partial entries are completed first before adding new
+        self.rescrape()
+
         scraped = self.users
         queue   = []
 
