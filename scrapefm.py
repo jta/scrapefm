@@ -163,7 +163,7 @@ class Scraper(object):
             done    = set([w.weekfrom for w in weeks_by_user(userid)])
             notdone = toscrape.difference(done)
             if len(notdone):
-                LOGGER.debug("Rescraping %d: %s", userid, username)
+                LOGGER.debug("Rescraping %s", username)
                 self.scrape_user(username, [(w, fromto[w]) for w in notdone ])
 
     def scrape_artist(self, name):
@@ -193,6 +193,22 @@ class Scraper(object):
                 LOGGER.debug("Connecting %s with %s.", *ordered.values())
                 Friends.create( **ordered )
 
+    def handle_api_errors(func):
+        """ Handler for pylast Exceptions. """
+        def handler(self, *args):
+            try:
+                func(self, *args)
+            except (pylast.WSError, 
+                    pylast.MalformedResponseError, 
+                    pylast.NetworkError) as e:
+                self.errcnt += 1
+                if self.errcnt < self.ERRLIM:
+                    LOGGER.error("Error %d: %s" % (self.errcnt, e))
+                else:
+                    raise ScraperException
+        return handler
+
+    @handle_api_errors
     @DBASE.commit_on_success
     def scrape_user(self, username, weeks):
         """ Scrape user data and return ID. 
@@ -203,7 +219,6 @@ class Scraper(object):
                 User from which to search for friends.
             weeks : list of (str, str)
         """
-        LOGGER.info("Adding user %s.", username)
         user   = self.network.get_user(username)
         
         if username not in self.users:
@@ -230,6 +245,7 @@ class Scraper(object):
             user : pylast.User
                 User to be retrieved.
         """
+        LOGGER.info("Adding user %s.", user)
         # hardwire function so that fields in Users table map
         # to get_* function in pylast.Users class
         user.get_subscriber = user.is_subscriber
