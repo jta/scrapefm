@@ -168,6 +168,11 @@ class Scraper(object):
 
     def scrape_artist(self, name):
         """ Insert artist to database and return key.
+
+            Parameters
+            ----------
+            name : str 
+                Artist name
         """
         LOGGER.info("Found new artist: %s.", name)
         assert not Artists.select().where(Artists.name == name).exists()
@@ -194,7 +199,7 @@ class Scraper(object):
                 Friends.create( **ordered )
 
     def handle_api_errors(func):
-        """ Handler for pylast Exceptions. """
+        """ Handler for pylast Exceptions. Wraps commit decorator. """
         def handler(self, *args):
             try:
                 func(self, *args)
@@ -372,7 +377,7 @@ def main():
     options.maxfriends = 1000
     options.do_connect = False
     options.datefmt    = "%Y-%m"
-    options.datematch  = "2013-0?"
+    options.datematch  = "2013-01"
 
     scraper = Scraper(options)
     try:
