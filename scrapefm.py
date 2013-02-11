@@ -11,7 +11,6 @@ import pylast
 import os
 import random
 import re
-import types
 
 API_KEY_VAR = "LAST_FM_API_PKEY"
 
@@ -65,53 +64,79 @@ class ArtistTags(BaseModel):
 class ScraperException(Exception):
     """ Raised if too many internal errors from Last.fm API """
 
-
 class Scraper(object):
-    """ Use Last.fm API to retrieve data to local database. """
+    """ Use Last.fm API to retrieve data to local database. 
+    """
     ERRLIM = 10     # errors before quitting
-    COMLIM = 1      # outstanding transactions before commit
 
     def __init__(self, options):
+        """ Import attributes from options and load data.
+
+        Attributes
+        ----------
+        network : pylast.LastFMNetowrk
+            Wrapper for Last.FM API.
+        errcnt : int
+            Counter for pylast.* exceptions observed.
+        users : dict
+            Scraped users. Maps username to user ID.
+        artists : dict
+            Scraped artists, mapping artist name to artist key.
+        """
         self.__dict__ = dict(options.__dict__.iteritems())
+        self.initdb()
+
         self.network = pylast.LastFMNetwork(api_key = self.api_key)
+        self.errcnt  = 0
+        self.users   = dict([ (u.name, u.id) for u in Users.select() ])
+        self.artists = dict([ (a.name, a.id) for a in Artists.select() ])
         self.network.enable_caching()
-        self.errcnt = 0
-        self.commit = 0
 
-        self.load_db()
+    def initdb(self):
+        """ Load database, creating tables if new.
 
-    def load_db(self):
-        """ Create tables if necessary """
+            When creating Artists table, insert dud artist '' to serve as 
+            placeholder in absence of scrobbles.
+        """
         DBASE.init(self.db)
         DBASE.set_autocommit(False)
         DBASE.connect()
-        Users.create_table(fail_silently=True)
-        Artists.create_table(fail_silently=True)
-        Tags.create_table(fail_silently=True)
-        Friends.create_table(fail_silently=True)
-        WeeklyArtistChart.create_table(fail_silently=True)
-        ArtistTags.create_table(fail_silently=True)
 
-        try:
-            Artists.select().where(Artists.name == '').get()
-        except Artists.DoesNotExist:
-            # dud artist to populate chart row in absence of scrobbles
+        if not Users.table_exists():
+            Users.create_table()
+            Artists.create_table()
+            Tags.create_table()
+            Friends.create_table()
+            WeeklyArtistChart.create_table()
+            ArtistTags.create_table()
             Artists.create(name = '') 
 
-        self.db = DBASE
-        # name -> id mapping for all scraped users and artists.
-        self.users   = dict([ (u.name, u.id) for u in Users.select() ])
-        self.artists = dict([ (a.name, a.id) for a in Artists.select() ])
         return 
 
     def _get_friends(self, user):
+        """ Returns list of friends.
+
+            Parameters
+            ----------
+            user : pylast.User
+                User object to retrieve friends for.
+        """
         return [ friend.name for friend in user.get_friends(self.maxfriends) ]
     
-    def _get_weeks(self):
-        """ Get weeks whose starting date matches provided pattern. """
+    def _get_weeks(self, datefmt, datematch):
+        """ Returns list of weeks in (weekfrom, weekto) form 
+            matching given date pattern.
+
+            Parameters
+            ----------
+            datefmt : str
+                A valid format code for strftime()
+            datematch : str
+                A regexp on which to match charted weeks after applying datefmt.
+        """
         user    = self.network.get_user('RJ')
-        pattern = re.compile(self.datematch)
-        unix_to_date = lambda x: datetime.fromtimestamp(x).strftime(self.datefmt)
+        pattern = re.compile(datematch)
+        unix_to_date = lambda x: datetime.fromtimestamp(x).strftime(datefmt)
 
         weeks = []
         for weekfrom, weekto in user.get_weekly_chart_dates():
@@ -120,7 +145,13 @@ class Scraper(object):
         return weeks
 
     def rescrape(self, weeks):
-        """ Load information from database. """
+        """ Iterate over previously scraped users and retrieve missing data.
+
+            Parameters
+            ----------
+            weeks : list of (str, str)
+                List of weeks to scrape.
+        """
         # get all possible weeks matching desired pattern.
         toscrape = set([ weekfrom for weekfrom, _ in weeks ])
         fromto   = dict(weeks)
@@ -136,14 +167,21 @@ class Scraper(object):
                 self.scrape_user(username, [(w, fromto[w]) for w in notdone ])
 
     def scrape_artist(self, name):
+        """ Insert artist to database and return key.
+        """
         LOGGER.info("Found new artist: %s.", name)
         assert not Artists.select().where(Artists.name == name).exists()
         return Artists.create(name = name).id
 
     def scrape_friends(self, user, userid):
-        """ Given user, explore connected nodes.
-            If a neighbour node has already been seen, add edge to friend table.
-            Otherwise, return unexplored neighbour.
+        """ Connect user to already scraped friends.
+
+            Parameters
+            ----------
+            user : pylast.User
+                User from which to search for friends.
+            userid : int
+                Respective user ID 
         """
         for friend in self._get_friends(user):
             if friend not in self.users:
@@ -157,7 +195,14 @@ class Scraper(object):
 
     @DBASE.commit_on_success
     def scrape_user(self, username, weeks):
-        """ Scrape user info and return ID. """
+        """ Scrape user data and return ID. 
+
+            Parameters
+            ----------
+            username : str
+                User from which to search for friends.
+            weeks : list of (str, str)
+        """
         LOGGER.info("Adding user %s.", username)
         user   = self.network.get_user(username)
         
@@ -176,8 +221,14 @@ class Scraper(object):
         
         return userid
 
-    def create_user(self, user):
+    @classmethod
+    def create_user(cls, user):
         """ Retrieves user information from last.fm and inserts to database.
+
+            Parameters
+            ----------
+            user : pylast.User
+                User to be retrieved.
         """
         # hardwire function so that fields in Users table map
         # to get_* function in pylast.Users class
@@ -188,7 +239,19 @@ class Scraper(object):
         return Users.create( **values ).id
 
     def scrape_week(self, user, userid, weekfrom, weekto):
-        """ Scrape single week, inserting artists if not cached.  """
+        """ Scrape single week, inserting artists if not cached.  
+
+            Parameters
+            ----------
+            user : pylast.User
+                User from which to search for friends.
+            userid : int
+                Respective user ID 
+            weekfrom : str
+                Week start in UNIX timestamp as defined by Last.fm
+            weekto : str
+                Week end in UNIX timestamp as defined by Last.fm
+        """
         LOGGER.debug("Scraping week %s for user %s.", weekfrom, user)
 
         row = { 'weekfrom': weekfrom, 'user': userid }
@@ -196,7 +259,8 @@ class Scraper(object):
         for artist, count in user.get_weekly_artist_charts(weekfrom, weekto):
             if artist.name not in self.artists:
                 self.artists[artist.name] = self.scrape_artist(artist.name)
-            row.update({'artist': self.artists[artist.name], 'playcount': count})
+            row.update({'artist': self.artists[artist.name], 
+                        'playcount': count})
             WeeklyArtistChart.create( **row )
 
         if 'artist' not in row:
@@ -204,15 +268,15 @@ class Scraper(object):
             row.update({'artist': self.artists[''], 'playcount': 0})
             WeeklyArtistChart.create( **row )
                
-    def close(self):
-        """ Close database, rolling back any uncommitted changes. """
-        self.db.commit()
-        self.db.close()
+    @classmethod
+    def close(cls):
+        """ Close database, wrap-up. """
+        DBASE.close()
 
     def run(self):
         """ Start from seed user and scrape info by following social graph.
         """
-        weeks = self._get_weeks()
+        weeks = self._get_weeks(self.datefmt, self.datematch)
 
         # verify partial entries are completed first before adding new
         self.rescrape(weeks)
@@ -287,8 +351,7 @@ def parse_args():
     return args
 
 def main():
-    """ Main entry point
-    """
+    """ Main entry point """
     options = parse_args()
     options.maxfriends = 1000
     options.do_connect = False
@@ -298,10 +361,8 @@ def main():
     scraper = Scraper(options)
     try:
         scraper.run()
-        #scraper.populate_friends()
-        #scraper.populate_charts('%Y-%m','2013-01')
     except (ScraperException, KeyboardInterrupt):
-        scraper.db.rollback()
+        pass
     scraper.close()
 
 if __name__ == "__main__":
