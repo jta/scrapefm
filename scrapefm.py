@@ -11,11 +11,8 @@ import pylast
 import os
 import random
 import re
-import urlparse
 
-# environment vars
 API_KEY_VAR = "LAST_FM_API_PKEY"
-HTTP_PROXY  = "HTTP_PROXY"
 
 LOGGER = logging.getLogger('scrapefm')
 DBASE  = peewee.SqliteDatabase(None)
@@ -70,7 +67,7 @@ class ScraperException(Exception):
 class Scraper(object):
     """ Use Last.fm API to retrieve data to local database. 
     """
-    ERRLIM = 100     # errors before quitting
+    ERRLIM = 10     # errors before quitting
 
     def __init__(self, options):
         """ Import attributes from options and load data.
@@ -383,11 +380,6 @@ def main():
     options.datematch  = "2013-01"
 
     scraper = Scraper(options)
-
-    if os.environ.get(HTTP_PROXY):
-        url = urlparse.urlparse(os.environ.get(HTTP_PROXY))
-        self.network.enable_(url.hostname, url.port)
-
     try:
         scraper.run()
     except (ScraperException, KeyboardInterrupt):
