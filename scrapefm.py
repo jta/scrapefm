@@ -38,9 +38,12 @@ class Users(BaseModel):
 
 class Artists(BaseModel):
     """ Last.fm artist table. """
-    name        = peewee.TextField()
-    playcount   = peewee.IntegerField(default=0)
-    tagcount    = peewee.IntegerField(default=0)
+    name      = peewee.TextField()
+    playcount = peewee.IntegerField(default=0)
+    listeners = peewee.IntegerField(default=0)
+    yearfrom  = peewee.IntegerField(null=True)
+    yearto    = peewee.IntegerField(null=True)
+
 
 class Tags(BaseModel):
     """ Tags table. """
@@ -62,7 +65,6 @@ class ArtistTags(BaseModel):
     """ Tags associated to artist. """
     artist      = peewee.ForeignKeyField(Artists)
     tag         = peewee.ForeignKeyField(Tags)
-    count       = peewee.IntegerField()
 
 class ScraperException(Exception):
     """ Raised if too many internal errors from Last.fm API """
@@ -85,6 +87,8 @@ class Scraper(object):
             Scraped users. Maps username to user ID.
         artists : dict
             Scraped artists, mapping artist name to artist key.
+        tags : dict
+            Scraped tags, mapping tag name to tag key.
         """
         self.__dict__ = dict(options.__dict__.iteritems())
         self.initdb()
@@ -93,6 +97,7 @@ class Scraper(object):
         self.errcnt  = 0
         self.users   = dict([ (u.name, u.id) for u in Users.select() ])
         self.artists = dict([ (a.name, a.id) for a in Artists.select() ])
+        self.tags    = dict([ (t.name, t.id) for t in Tags.select() ])
         self.network.enable_caching()
 
     def initdb(self):
@@ -170,7 +175,7 @@ class Scraper(object):
                 self.scrape_user(username, [(w, fromto[w]) for w in notdone ])
 
     def scrape_artist(self, name):
-        """ Insert artist to database and return key.
+        """ Insert artist to database and return key, scraping tags in process.
 
             Parameters
             ----------
@@ -178,8 +183,33 @@ class Scraper(object):
                 Artist name
         """
         LOGGER.info("Found new artist: %s.", name)
-        assert not Artists.select().where(Artists.name == name).exists()
-        return Artists.create(name = name).id
+        artist = self.network.get_artist(name)
+        doc    = artist._request('artist.getInfo', True)
+
+        values = {}
+        for field in Artists._meta.get_fields():
+            values[field.name] = field.db_value(pylast._extract(doc, field.name))
+        artistid = Artists.create( **values ).id
+
+        tags = [ pylast._extract(node, "name") for node in doc.getElementsByTagName("tag") ]
+        for tag in tags:
+            if tag not in self.tags:
+                self.tags[tag] = self.create_tag(tag)
+            ArtistTags.create( artist = artistid, tag = self.tags[tag] )
+
+        return artistid
+
+    @classmethod
+    def create_tag(cls, tag):
+        """ Insert tag to database and return key 
+
+            Parameters
+            ----------
+            tag : str 
+                Tag description 
+        """
+        LOGGER.info("Found new tag: %s.", tag)
+        return Tags.create(name = tag).id
 
     def scrape_friends(self, user, userid):
         """ Connect user to already scraped friends.
@@ -254,12 +284,10 @@ class Scraper(object):
                 User to be retrieved.
         """
         LOGGER.info("Adding user %s.", user)
-        # hardwire function so that fields in Users table map
-        # to get_* function in pylast.Users class
-        user.get_subscriber = user.is_subscriber
+        doc    = user._request('user.getInfo', True)
         values = {}
         for field in Users._meta.get_fields():
-            values[field.name] = field.db_value(getattr(user, 'get_%s' % field.name)())
+            values[field.name] = field.db_value(pylast._extract(doc, field.name))
         return Users.create( **values ).id
 
     def scrape_week(self, user, userid, weekfrom, weekto):
