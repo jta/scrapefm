@@ -38,13 +38,9 @@ class Users(BaseModel):
 
 class Artists(BaseModel):
     """ Last.fm artist table. """
-    id        = peewee.IntegerField(primary_key=True)
-    mbid      = peewee.CharField(null=True)
     name      = peewee.TextField()
     playcount = peewee.IntegerField(default=0)
-    listeners = peewee.IntegerField(default=0)
-    yearfrom  = peewee.IntegerField(null=True)
-    yearto    = peewee.IntegerField(null=True)
+    tagcount = peewee.IntegerField(default=0)
 
 class Tags(BaseModel):
     """ Tags table. """
@@ -93,50 +89,46 @@ class Scraper(object):
         """
         self.__dict__ = dict(options.__dict__.iteritems())
         self.initdb()
-
         self.network = pylast.LastFMNetwork(api_key = self.api_key)
         self.errcnt  = 0
         self.users   = dict([ (u.name, u.id) for u in Users.select() ])
-        self.artists = dict([ (a.name, a.id) for a in Artists.raw('select name, id from Artists') ])
-        #self.tags    = dict([ (t.name, t.id) for t in Tags.select() ])
-        self.tags = {}
-        self.db = 'newartist.db'
-        self.initdb()
-        idname = [ (id, name) for name, id in self.artists.iteritems() ]
-        # new db
-        if os.environ.get(HTTP_PROXY):
-            url = urlparse.urlparse(os.environ.get(HTTP_PROXY))
-            self.network.enable_proxy(url.hostname, url.port)
+        self.artists = dict([ (a.name, a.id) for a in Artists.select() ])
+        self.tags    = dict([ (t.name, t.id) for t in Tags.select() ])
 
         self.network.enable_caching()
 
-        self.artists = dict([ (a.name, a.id) for a in Artists.select() ])
-        for id, name in sorted(idname):
-            if not name or name in self.artists:
-                continue
-            self.scrape_artist(name, id)
+    @classmethod
+    def close(cls):
+        """ Close database, wrap-up. """
+        DBASE.close()
 
+    @classmethod
+    def create_tag(cls, tag):
+        """ Insert tag to database and return key 
 
-    def initdb(self):
-        """ Load database, creating tables if new.
-
-            When creating Artists table, insert dud artist '' to serve as 
-            placeholder in absence of scrobbles.
+            Parameters
+            ----------
+            tag : str 
+                Tag description 
         """
-        DBASE.init(self.db)
-        DBASE.set_autocommit(False)
-        DBASE.connect()
+        LOGGER.info("Found new tag: %s.", tag)
+        return Tags.create(name = tag).id
 
-        if not Users.table_exists():
-            Users.create_table()
-            Artists.create_table()
-            Tags.create_table()
-            Friends.create_table()
-            WeeklyArtistChart.create_table()
-            ArtistTags.create_table()
-            Artists.create(name = '') 
+    @classmethod
+    def create_user(cls, user):
+        """ Retrieves user information from last.fm and inserts to database.
 
-        return 
+            Parameters
+            ----------
+            user : pylast.User
+                User to be retrieved.
+        """
+        LOGGER.info("Adding user %s.", user)
+        doc    = user._request('user.getInfo', True)
+        values = {}
+        for field in Users._meta.get_fields():
+            values[field.name] = field.db_value(pylast._extract(doc, field.name))
+        return Users.create( **values ).id
 
     def _get_friends(self, user):
         """ Returns list of friends.
@@ -169,6 +161,42 @@ class Scraper(object):
                 weeks.append( (weekfrom, weekto) )
         return weeks
 
+    def handle_api_errors(func):
+        """ Handler for pylast Exceptions. Wraps commit decorator. """
+        def handler(self, *args):
+            try:
+                func(self, *args)
+            except (pylast.WSError, 
+                    pylast.MalformedResponseError, 
+                    pylast.NetworkError) as e:
+                self.errcnt += 1
+                if self.errcnt < self.ERRLIM:
+                    LOGGER.error("Error %d: %s" % (self.errcnt, e))
+                else:
+                    raise ScraperException
+        return handler
+
+    def initdb(self):
+        """ Load database, creating tables if new.
+
+            When creating Artists table, insert dud artist '' to serve as 
+            placeholder in absence of scrobbles.
+        """
+        DBASE.init(self.db)
+        DBASE.set_autocommit(False)
+        DBASE.connect()
+
+        if not Users.table_exists():
+            Users.create_table()
+            Artists.create_table()
+            Tags.create_table()
+            Friends.create_table()
+            WeeklyArtistChart.create_table()
+            ArtistTags.create_table()
+            Artists.create(name = '') 
+
+        return 
+
     def rescrape(self, weeks):
         """ Iterate over previously scraped users and retrieve missing data.
 
@@ -190,25 +218,35 @@ class Scraper(object):
             if len(notdone):
                 LOGGER.debug("Rescraping %s", username)
                 self.scrape_user(username, [(w, fromto[w]) for w in notdone ])
-             
-    def handle_api_errors(func):
-        """ Handler for pylast Exceptions. Wraps commit decorator. """
-        def handler(self, *args):
-            try:
-                func(self, *args)
-            except (pylast.WSError, 
-                    pylast.MalformedResponseError, 
-                    pylast.NetworkError) as e:
-                self.errcnt += 1
-                if self.errcnt < self.ERRLIM:
-                    LOGGER.error("Error %d: %s" % (self.errcnt, e))
-                else:
-                    raise ScraperException
-        return handler
-         
-    @handle_api_errors
-    @DBASE.commit_on_success
-    def scrape_artist(self, name, id = None):
+               
+    def run(self):
+        """ Start from seed user and scrape info by following social graph.
+        """
+        weeks = self._get_weeks(self.datefmt, self.datematch)
+
+        # verify partial entries are completed first before adding new
+        self.rescrape(weeks)
+
+        scraped = self.users
+        queue   = []
+
+        # auxiliary function to sample at most n items from x
+        nsample = lambda x, n: random.sample(x, min(len(x), n))
+
+        # use seed if starting from scratch
+        if not len(scraped):
+            queue.append( self.username )
+
+        while len(scraped) < self.limit:
+            while not len(queue):
+                # sample neighbours from random scraped user.
+                user  = self.network.get_user( random.choice(scraped.keys()) )
+                queue = nsample( self._get_friends(user), 10 )
+            username = queue.pop()
+            if username not in scraped:
+                scraped[username] = self.scrape_user(username, weeks)
+
+    def scrape_artist(self, name):
         """ Insert artist to database and return key, scraping tags in process.
 
             Parameters
@@ -225,11 +263,9 @@ class Scraper(object):
         values = {}
         for field in Artists._meta.get_fields():
             values[field.name] = field.db_value(pylast._extract(doc, field.name))
-        if id:
-            values['id'] = id
+        values['tagcount'] = 0
         artistid = Artists.create( **values ).id
-        assert(artistid == id)
-        LOGGER.info("%s: %d listeners, %d playcount.", name, values['listeners'], values['playcount'])
+        return artistid
 
         tags = [ pylast._extract(node, "name") for node in doc.getElementsByTagName("tag") ]
         for tag in tags:
@@ -238,18 +274,6 @@ class Scraper(object):
             ArtistTags.create( artist = artistid, tag = self.tags[tag] )
 
         return artistid
-
-    @classmethod
-    def create_tag(cls, tag):
-        """ Insert tag to database and return key 
-
-            Parameters
-            ----------
-            tag : str 
-                Tag description 
-        """
-        LOGGER.info("Found new tag: %s.", tag)
-        return Tags.create(name = tag).id
 
     def scrape_friends(self, user, userid):
         """ Connect user to already scraped friends.
@@ -299,22 +323,6 @@ class Scraper(object):
         
         return userid
 
-    @classmethod
-    def create_user(cls, user):
-        """ Retrieves user information from last.fm and inserts to database.
-
-            Parameters
-            ----------
-            user : pylast.User
-                User to be retrieved.
-        """
-        LOGGER.info("Adding user %s.", user)
-        doc    = user._request('user.getInfo', True)
-        values = {}
-        for field in Users._meta.get_fields():
-            values[field.name] = field.db_value(pylast._extract(doc, field.name))
-        return Users.create( **values ).id
-
     def scrape_week(self, user, userid, weekfrom, weekto):
         """ Scrape single week, inserting artists if not cached.  
 
@@ -344,40 +352,7 @@ class Scraper(object):
             LOGGER.debug("No chart, adding empty entry as placeholder.")
             row.update({'artist': self.artists[''], 'playcount': 0})
             WeeklyArtistChart.create( **row )
-               
-    @classmethod
-    def close(cls):
-        """ Close database, wrap-up. """
-        DBASE.close()
-
-    def run(self):
-        """ Start from seed user and scrape info by following social graph.
-        """
-        weeks = self._get_weeks(self.datefmt, self.datematch)
-
-        # verify partial entries are completed first before adding new
-        self.rescrape(weeks)
-
-        scraped = self.users
-        queue   = []
-
-        # auxiliary function to sample at most n items from x
-        nsample = lambda x, n: random.sample(x, min(len(x), n))
-
-        # use seed if starting from scratch
-        if not len(scraped):
-            queue.append( self.username )
-
-        while len(scraped) < self.limit:
-            while not len(queue):
-                # sample neighbours from random scraped user.
-                user  = self.network.get_user( random.choice(scraped.keys()) )
-                queue = nsample( self._get_friends(user), 10 )
-            username = queue.pop()
-            if username not in scraped:
-                scraped[username] = self.scrape_user(username, weeks)
-
-
+        
 def parse_args():
     """ Parse command line options.
     """
@@ -437,6 +412,9 @@ def main():
 
     scraper = Scraper(options)
     
+    if os.environ.get(HTTP_PROXY):
+        url = urlparse.urlparse(os.environ.get(HTTP_PROXY))
+        self.network.enable_proxy(url.hostname, url.port)
 
     try:
         scraper.run()
