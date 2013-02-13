@@ -101,9 +101,11 @@ class Scraper(object):
         self.errcnt = 0
 
         self.initdb()
-        self.tags = dict([(t.name, t.id) for t in Tags.select()])
-        self.users = dict([(u.name, u.id) for u in Users.select()])
-        self.artists = dict([(a.name, a.id) for a in Artists.select()])
+
+        load_keys = lambda t: dict([(row.name, row.id) for row in t.select()])
+        self.artists = load_keys(Artists)
+        self.users = load_keys(Users)
+        self.tags = load_keys(Tags)
 
         self.network.enable_caching()
 
@@ -125,6 +127,10 @@ class Scraper(object):
         return Tags.create(name=tag).id
 
     @classmethod
+    def get_fields(cls, request, field):
+        return field.db_value(pylast._extract(request, field.name))
+
+    @classmethod
     def create_user(cls, user):
         """ Retrieves user information from last.fm and inserts to database.
 
@@ -135,10 +141,8 @@ class Scraper(object):
         """
         LOGGER.info("Adding user %s.", user)
         doc = user._request('user.getInfo', True)
-
         fields = Users._meta.get_fields()
-        getvar = lambda x: field.db_value(pylast._extract(doc, x.name))
-        values = dict([(field.name, getvar(field)) for field in fields])
+        values = dict([(f.name, cls.get_fields(doc, f)) for f in fields])
         return Users.create(**values).id
 
     def _get_friends(self, user):
@@ -174,7 +178,7 @@ class Scraper(object):
         """ Handler for pylast Exceptions. Wraps commit decorator. """
         def handler(self, *args):
             try:
-                func(self, *args)
+                ret =func(self, *args)
             except (pylast.WSError,
                     pylast.MalformedResponseError,
                     pylast.NetworkError) as e:
@@ -183,6 +187,7 @@ class Scraper(object):
                     LOGGER.error("Error %d: %s" % (self.errcnt, e))
                 else:
                     raise ScraperException
+            return ret
         return handler
 
     def initdb(self):
@@ -214,22 +219,18 @@ class Scraper(object):
             weeks : list of (str, str)
                 List of weeks to scrape.
         """
-        # get all possible weeks matching desired pattern.
         toscrape = set([start for start, _ in weeks])
-        week_end = dict(weeks)
+        weekpair = dict([(week[1], week) for week in weeks])
 
         select_week = WeeklyArtistChart.select(WeeklyArtistChart.weekfrom)
-        filter_user = lambda q, u: q.where(WeeklyArtistChart.user == u).distinct()
+        filter_user = lambda u: select_week.where(WeeklyArtistChart.user == u)
+        get_scraped = lambda u: [r.weekfrom for r in filter_user(u).distinct()]
 
         for username, userid in self.users.iteritems():
-            done = set(filter_user(select_week, userid))
-            print done
-            done = set([w.weekfrom for w in filter_user(select_week, userid)])
-            print done
-            notdone = toscrape.difference(done)
-            if len(notdone):
-                LOGGER.debug("Rescraping %s", username)
-                self.scrape_user(username, [(s, week_end[w]) for s in notdone])
+            tbd = toscrape.difference(get_scraped(userid))
+            if len(tbd):
+                LOGGER.debug("Rescraping user %s", name)
+                self.scrape_user(username, [weekpair[start] for start in tbd])
 
     def run(self):
         """ Start from seed user and scrape info by following social graph.
@@ -239,24 +240,23 @@ class Scraper(object):
         # verify partial entries are completed first before adding new
         self.rescrape(weeks)
 
-        scraped = self.users
         queue = []
 
         # auxiliary function to sample at most n items from x
         nsample = lambda x, n: random.sample(x, min(len(x), n))
 
         # use seed if starting from scratch
-        if not len(scraped):
+        if not len(self.users):
             queue.append(self.username)
 
-        while len(scraped) < self.limit:
+        while len(self.users) < self.limit:
             while not len(queue):
                 # sample neighbours from random scraped user.
-                user = self.network.get_user(random.choice(scraped.keys()))
+                user = self.network.get_user(random.choice(self.users.keys()))
                 queue = nsample(self._get_friends(user), 10)
             username = queue.pop()
-            if username not in scraped:
-                scraped[username] = self.scrape_user(username, weeks)
+            if username not in self.users:
+                self.users[username] = self.scrape_user(username, weeks)
 
     def scrape_artist(self, name):
         """ Insert artist to database and return key, scraping tags in process.
@@ -268,22 +268,17 @@ class Scraper(object):
         """
         artist = self.network.get_artist(name)
         LOGGER.info("Found new artist: %s.", name)
-        if artist.get_name(True) in self.artists:
-            return self.artists[artist.get_name(True)]
+        return Artists.create(name=name).id
 
         doc = artist._request('artist.getInfo', True)
-        values = {}
-        for field in Artists._meta.get_fields():
-            values[field.name] = field.db_value(pylast._extract(doc, field.name))
-        values['tagcount'] = 0
+        values = dict([(f.name, cls.get_fields(doc, f)) for f in fields])
         artistid = Artists.create(**values).id
-        return artistid
 
-        tags = [pylast._extract(node, "name") for node in doc.getElementsByTagName("tag")]
-        for tag in tags:
-            if tag not in self.tags:
-                self.tags[tag] = self.create_tag(tag)
-            ArtistTags.create(artist=artistid, tag=self.tags[tag])
+        for tag in doc.getElementsByTagName("tag"):
+            tagname = pylast._extract(node, "name")
+            if tagname not in self.tags:
+                self.tags[tagname] = self.create_tag(tagname)
+            ArtistTags.create(artist=artistid, tag=self.tags[tagname])
 
         return artistid
 
@@ -300,12 +295,13 @@ class Scraper(object):
         for friend in self._get_friends(user):
             if friend not in self.users:
                 continue
-            ordered = dict(zip(('a', 'b'), sorted([userid, self.users[friend]])))
+            lo = min(userid, self.users[friend])
+            hi = max(userid, self.users[friend])
             try:
-                Friends.get(**ordered)
+                Friends.get(a=lo, b=hi)
             except Friends.DoesNotExist:
-                LOGGER.debug("Connecting %s with %s.", *ordered.values())
-                Friends.create(**ordered)
+                LOGGER.debug("Connecting %s with %s.", lo, hi)
+                Friends.create(a=lo, b=hi)
 
     @handle_api_errors
     @DBASE.commit_on_success
