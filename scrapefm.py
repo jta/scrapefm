@@ -38,12 +38,13 @@ class Users(BaseModel):
 
 class Artists(BaseModel):
     """ Last.fm artist table. """
+    id        = peewee.IntegerField(primary_key=True)
+    mbid      = peewee.CharField(null=True)
     name      = peewee.TextField()
     playcount = peewee.IntegerField(default=0)
     listeners = peewee.IntegerField(default=0)
     yearfrom  = peewee.IntegerField(null=True)
     yearto    = peewee.IntegerField(null=True)
-
 
 class Tags(BaseModel):
     """ Tags table. """
@@ -96,9 +97,25 @@ class Scraper(object):
         self.network = pylast.LastFMNetwork(api_key = self.api_key)
         self.errcnt  = 0
         self.users   = dict([ (u.name, u.id) for u in Users.select() ])
-        self.artists = dict([ (a.name, a.id) for a in Artists.select() ])
-        self.tags    = dict([ (t.name, t.id) for t in Tags.select() ])
+        self.artists = dict([ (a.name, a.id) for a in Artists.raw('select name, id from Artists') ])
+        #self.tags    = dict([ (t.name, t.id) for t in Tags.select() ])
+        self.tags = {}
+        self.db = 'newartist.db'
+        self.initdb()
+        idname = [ (id, name) for name, id in self.artists.iteritems() ]
+        # new db
+        if os.environ.get(HTTP_PROXY):
+            url = urlparse.urlparse(os.environ.get(HTTP_PROXY))
+            self.network.enable_proxy(url.hostname, url.port)
+
         self.network.enable_caching()
+
+        self.artists = dict([ (a.name, a.id) for a in Artists.select() ])
+        for id, name in sorted(idname):
+            if not name or name in self.artists:
+                continue
+            self.scrape_artist(name, id)
+
 
     def initdb(self):
         """ Load database, creating tables if new.
@@ -173,8 +190,25 @@ class Scraper(object):
             if len(notdone):
                 LOGGER.debug("Rescraping %s", username)
                 self.scrape_user(username, [(w, fromto[w]) for w in notdone ])
-
-    def scrape_artist(self, name):
+             
+    def handle_api_errors(func):
+        """ Handler for pylast Exceptions. Wraps commit decorator. """
+        def handler(self, *args):
+            try:
+                func(self, *args)
+            except (pylast.WSError, 
+                    pylast.MalformedResponseError, 
+                    pylast.NetworkError) as e:
+                self.errcnt += 1
+                if self.errcnt < self.ERRLIM:
+                    LOGGER.error("Error %d: %s" % (self.errcnt, e))
+                else:
+                    raise ScraperException
+        return handler
+         
+    @handle_api_errors
+    @DBASE.commit_on_success
+    def scrape_artist(self, name, id = None):
         """ Insert artist to database and return key, scraping tags in process.
 
             Parameters
@@ -182,14 +216,20 @@ class Scraper(object):
             name : str 
                 Artist name
         """
-        LOGGER.info("Found new artist: %s.", name)
         artist = self.network.get_artist(name)
-        doc    = artist._request('artist.getInfo', True)
+        LOGGER.info("Found new artist: %s.", name)
+        if artist.get_name(True) in self.artists:
+            return self.artists[artist.get_name(True)]
 
+        doc    = artist._request('artist.getInfo', True)
         values = {}
         for field in Artists._meta.get_fields():
             values[field.name] = field.db_value(pylast._extract(doc, field.name))
+        if id:
+            values['id'] = id
         artistid = Artists.create( **values ).id
+        assert(artistid == id)
+        LOGGER.info("%s: %d listeners, %d playcount.", name, values['listeners'], values['playcount'])
 
         tags = [ pylast._extract(node, "name") for node in doc.getElementsByTagName("tag") ]
         for tag in tags:
@@ -230,21 +270,6 @@ class Scraper(object):
             except Friends.DoesNotExist:
                 LOGGER.debug("Connecting %s with %s.", *ordered.values())
                 Friends.create( **ordered )
-
-    def handle_api_errors(func):
-        """ Handler for pylast Exceptions. Wraps commit decorator. """
-        def handler(self, *args):
-            try:
-                func(self, *args)
-            except (pylast.WSError, 
-                    pylast.MalformedResponseError, 
-                    pylast.NetworkError) as e:
-                self.errcnt += 1
-                if self.errcnt < self.ERRLIM:
-                    LOGGER.error("Error %d: %s" % (self.errcnt, e))
-                else:
-                    raise ScraperException
-        return handler
 
     @handle_api_errors
     @DBASE.commit_on_success
@@ -412,9 +437,6 @@ def main():
 
     scraper = Scraper(options)
     
-    if os.environ.get(HTTP_PROXY):
-        url = urlparse.urlparse(os.environ.get(HTTP_PROXY))
-        scraper.network.enable_proxy(url.hostname, url.port)
 
     try:
         scraper.run()
