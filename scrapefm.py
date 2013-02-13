@@ -426,7 +426,7 @@ def main():
 
     if os.environ.get(HTTP_PROXY):
         url = urlparse.urlparse(os.environ.get(HTTP_PROXY))
-        self.network.enable_proxy(url.hostname, url.port)
+        scraper.network.enable_proxy(url.hostname, url.port)
 
     try:
         scraper.run()
