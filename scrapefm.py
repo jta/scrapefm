@@ -41,9 +41,12 @@ class Users(BaseModel):
 
 class Artists(BaseModel):
     """ Last.fm artist table. """
+    mbid = peewee.CharField(null=True)
     name = peewee.TextField()
     playcount = peewee.IntegerField(default=0)
-    tagcount = peewee.IntegerField(default=0)
+    listeners = peewee.IntegerField(default=0)
+    yearfrom = peewee.IntegerField(null=True)
+    yearto = peewee.IntegerField(null=True)
 
 
 class Tags(BaseModel):
@@ -95,6 +98,8 @@ class Scraper(object):
             Scraped artists, mapping artist name to artist key.
         tags : dict
             Scraped tags, mapping tag name to tag key.
+        friends : set of (int, int)
+            Observed ID pairs of friends in ascending order. 
         """
         self.__dict__ = dict(options.__dict__.iteritems())
         self.network = pylast.LastFMNetwork(api_key=self.api_key)
@@ -103,9 +108,10 @@ class Scraper(object):
         self.initdb()
 
         load_keys = lambda t: dict([(row.name, row.id) for row in t.select()])
-        self.artists = load_keys(Artists)
-        self.users = load_keys(Users)
         self.tags = load_keys(Tags)
+        self.users = load_keys(Users)
+        self.artists = load_keys(Artists)
+        self.friends = set([(row.a, row.b) for row in Friends.select()])
 
         self.network.enable_caching()
 
@@ -127,8 +133,31 @@ class Scraper(object):
         return Tags.create(name=tag).id
 
     @classmethod
-    def get_fields(cls, request, field):
-        return field.db_value(pylast._extract(request, field.name))
+    def get_child(cls, response, field):
+        """ Retrieves child element from response and casts it according
+            to field type in DB model.
+
+            Parameters
+            ----------
+            response : XML string
+                Response from Last.fm
+            field : DB attribute.
+                Attribute object contains name, which matches child in XML
+                tree, and db_value, which casts string to appropriate type.
+        """
+        return field.db_value(pylast._extract(response, field.name))
+
+    @classmethod
+    def create_artist(cls, artist):
+        """ Retrieves artist information from last.fm and inserts to database.
+
+            Parameters
+            ----------
+            artist : pylast.Artist
+                Artist to be retrieved.
+        """
+        LOGGER.info("Found new artist: %s.", artist.get_name())
+        return cls.create_single(artist, 'artist.getInfo', Artists)
 
     @classmethod
     def create_user(cls, user):
@@ -140,10 +169,31 @@ class Scraper(object):
                 User to be retrieved.
         """
         LOGGER.info("Adding user %s.", user)
-        doc = user._request('user.getInfo', True)
-        fields = Users._meta.get_fields()
-        values = dict([(f.name, cls.get_fields(doc, f)) for f in fields])
-        return Users.create(**values).id
+        return cls.create_single(user, 'user.getInfo', Users)
+
+    @classmethod
+    def create_single(cls, obj, req, table):
+        """ Create single entity and store in table.
+
+            All Last.fm entities share similar creation process:
+                - request Info
+                - retrieve table fields from response
+                - store to table
+                - return id
+
+            Parameters
+            ----------
+            obj : pylast object
+                User, Artist, Album
+            req : str
+                API method to be called.
+            table : peewee.Model
+                DB table to write data to.
+        """
+        doc = obj._request(req, True)
+        fields = table._meta.get_fields()
+        values = dict([(f.name, cls.get_child(doc, f)) for f in fields])
+        return table.create(**values).id
 
     def _get_friends(self, user):
         """ Returns list of friends.
@@ -177,8 +227,9 @@ class Scraper(object):
     def handle_api_errors(func):
         """ Handler for pylast Exceptions. Wraps commit decorator. """
         def handler(self, *args):
+            ret = None
             try:
-                ret =func(self, *args)
+                ret = func(self, *args)
             except (pylast.WSError,
                     pylast.MalformedResponseError,
                     pylast.NetworkError) as e:
@@ -267,20 +318,26 @@ class Scraper(object):
                 Artist name
         """
         artist = self.network.get_artist(name)
-        LOGGER.info("Found new artist: %s.", name)
-        return Artists.create(name=name).id
+        artistid = self.create_artist(artist)
 
-        doc = artist._request('artist.getInfo', True)
-        values = dict([(f.name, cls.get_fields(doc, f)) for f in fields])
-        artistid = Artists.create(**values).id
-
-        for tag in doc.getElementsByTagName("tag"):
-            tagname = pylast._extract(node, "name")
-            if tagname not in self.tags:
+        for tag in self.scrape_artisttags(artist):
+            if tag not in self.tags:
                 self.tags[tagname] = self.create_tag(tagname)
             ArtistTags.create(artist=artistid, tag=self.tags[tagname])
 
         return artistid
+
+    def scrape_artisttags(self, artist, artistid):
+        """ Iterator over top tags associated with artist
+
+            Parameters
+            ----------
+            artist : pylast.Artist
+                Artist object.
+        """
+        doc = artist._request('artist.getInfo', True)
+        for tag in doc.getElementsByTagName("tag"):
+            yield pylast._extract(tag, "name")
 
     def scrape_friends(self, user, userid):
         """ Connect user to already scraped friends.
@@ -295,13 +352,11 @@ class Scraper(object):
         for friend in self._get_friends(user):
             if friend not in self.users:
                 continue
-            lo = min(userid, self.users[friend])
-            hi = max(userid, self.users[friend])
-            try:
-                Friends.get(a=lo, b=hi)
-            except Friends.DoesNotExist:
-                LOGGER.debug("Connecting %s with %s.", lo, hi)
-                Friends.create(a=lo, b=hi)
+            pair = tuple(sorted([userid, self.users[friend]]))
+            if pair not in self.friends:
+                LOGGER.debug("Connecting %s with %s.", *pair)
+                Friends.create(a=pair[0], b=pair[1])
+                self.friends.add(pair)
 
     @handle_api_errors
     @DBASE.commit_on_success
