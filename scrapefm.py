@@ -248,7 +248,6 @@ class Scraper(object):
             placeholder in absence of scrobbles.
         """
         DBASE.init(self.db)
-        DBASE.set_autocommit(False)
         DBASE.connect()
 
         if not Users.table_exists():
@@ -260,6 +259,7 @@ class Scraper(object):
             ArtistTags.create_table()
             Artists.create(name='')
 
+        DBASE.set_autocommit(False)
         return
 
     def rescrape(self, weeks):
@@ -322,12 +322,12 @@ class Scraper(object):
 
         for tag in self.scrape_artisttags(artist):
             if tag not in self.tags:
-                self.tags[tagname] = self.create_tag(tagname)
-            ArtistTags.create(artist=artistid, tag=self.tags[tagname])
+                self.tags[tag] = self.create_tag(tag)
+            ArtistTags.create(artist=artistid, tag=self.tags[tag])
 
         return artistid
 
-    def scrape_artisttags(self, artist, artistid):
+    def scrape_artisttags(self, artist):
         """ Iterator over top tags associated with artist
 
             Parameters
