@@ -4,6 +4,7 @@
     scrapefm.py: Last.fm scraper
 """
 import argparse
+import collections
 from datetime import datetime
 import logging
 import peewee
@@ -19,6 +20,35 @@ HTTP_PROXY = "HTTP_PROXY"
 
 LOGGER = logging.getLogger('scrapefm')
 DBASE = peewee.SqliteDatabase(None)
+
+
+class _Cache(collections.Mapping):
+    def __init__(self, table):
+        self.cache = dict([(row.name, row.id) for row in table.select()])
+        self.temp = dict()
+
+    def __getitem__(self, key):
+        if key in self.temp:
+            return self.temp[key]
+        if key in self.cache:
+            return self.cache[key]
+        raise KeyError
+
+    def __setitem__(self, key, value):
+        self.temp[key] = value
+
+    def __iter__(self):
+        return iter(self.cache)
+
+    def __len__(self):
+        return len(self.cache)
+
+    def commit(self):
+        self.cache.update(self.temp)
+        self.rollback()
+
+    def rollback(self):
+        self.temp = dict()
 
 
 class BaseModel(peewee.Model):
@@ -99,17 +129,18 @@ class Scraper(object):
         tags : dict
             Scraped tags, mapping tag name to tag key.
         friends : set of (int, int)
-            Observed ID pairs of friends in ascending order. 
+            Observed ID pairs of friends in ascending order.
         """
-        self.__dict__ = dict(options.__dict__.iteritems())
+        self.__dict__ = dict(options.__dict__.items())
         self.network = pylast.LastFMNetwork(api_key=self.api_key)
         self.errcnt = 0
 
         self.initdb()
 
+        self.users = _Cache(Users)
+
         load_keys = lambda t: dict([(row.name, row.id) for row in t.select()])
         self.tags = load_keys(Tags)
-        self.users = load_keys(Users)
         self.artists = load_keys(Artists)
         self.friends = set([(row.a, row.b) for row in Friends.select()])
 
@@ -277,7 +308,7 @@ class Scraper(object):
         filter_user = lambda u: select_week.where(WeeklyArtistChart.user == u)
         get_scraped = lambda u: [r.weekfrom for r in filter_user(u).distinct()]
 
-        for username, userid in self.users.iteritems():
+        for username, userid in self.users.items():
             tbd = toscrape.difference(get_scraped(userid))
             if len(tbd):
                 LOGGER.debug("Rescraping user %s", name)
@@ -300,14 +331,23 @@ class Scraper(object):
         if not len(self.users):
             queue.append(self.username)
 
-        while len(self.users) < self.limit:
+        more_work = lambda: len(self.users) < self.limit
+        user_pool = lambda: len(queue) + len(self.users)
+
+        while user_pool() and more_work():
             while not len(queue):
                 # sample neighbours from random scraped user.
                 user = self.network.get_user(random.choice(self.users.keys()))
                 queue = nsample(self._get_friends(user), 10)
             username = queue.pop()
             if username not in self.users:
-                self.users[username] = self.scrape_user(username, weeks)
+                userid = self.scrape_user(username, weeks)
+                if userid:
+                    self.users[username] = userid
+
+        if not user_pool():
+            LOGGER.error("User pool depleted prematurely.")
+            raise ScraperException
 
     def scrape_artist(self, name):
         """ Insert artist to database and return key, scraping tags in process.
@@ -407,6 +447,7 @@ class Scraper(object):
         for artist, count in user.get_weekly_artist_charts(weekfrom, weekto):
             if artist.name not in self.artists:
                 self.artists[artist.name] = self.scrape_artist(artist.name)
+
             row.update({'artist': self.artists[artist.name],
                         'playcount': count})
             WeeklyArtistChart.create(**row)
