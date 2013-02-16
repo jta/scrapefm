@@ -157,6 +157,7 @@ class Scraper(object):
         self.network = pylast.LastFMNetwork(api_key=self.api_key)
         self.errcnt = 0
 
+        random.seed(options.seed)
         self.initdb()
 
         self.artists = _Cache(Artists)
@@ -539,6 +540,7 @@ def main():
     options.datematch = "2013-01"
     options.datefmt = "%Y-%m"
     options.cache = '.scrape'
+    options.seed = 666
 
     scraper = Scraper(options)
 
