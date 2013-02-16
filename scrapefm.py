@@ -24,31 +24,31 @@ DBASE = peewee.SqliteDatabase(None)
 
 class _Cache(collections.Mapping):
     def __init__(self, table):
-        self.cache = dict([(row.name, row.id) for row in table.select()])
-        self.temp = dict()
+        self.store = dict([(row.name, row.id) for row in table.select()])
+        self.tmp = dict()
 
     def __getitem__(self, key):
-        if key in self.temp:
-            return self.temp[key]
-        if key in self.cache:
-            return self.cache[key]
+        if key in self.tmp:
+            return self.tmp[key]
+        if key in self.store:
+            return self.store[key]
         raise KeyError
 
     def __setitem__(self, key, value):
-        self.temp[key] = value
+        self.tmp[key] = value
 
     def __iter__(self):
-        return iter(self.cache)
+        return iter(self.store)
 
     def __len__(self):
-        return len(self.cache)
+        return len(self.store)
 
     def commit(self):
-        self.cache.update(self.temp)
-        self.rollback()
+        self.store.update(self.tmp)
+        self.tmp = dict()
 
     def rollback(self):
-        self.temp = dict()
+        self.tmp = dict()
 
 
 class BaseModel(peewee.Model):
@@ -138,13 +138,15 @@ class Scraper(object):
         self.initdb()
 
         self.users = _Cache(Users)
+        self.tags = _Cache(Tags)
+        self.artists = _Cache(Artists)
+
+        self.caches = (self.users, self.tags, self.artists)
 
         load_keys = lambda t: dict([(row.name, row.id) for row in t.select()])
-        self.tags = load_keys(Tags)
-        self.artists = load_keys(Artists)
         self.friends = set([(row.a, row.b) for row in Friends.select()])
 
-        self.network.enable_caching()
+        self.network.enable_caching(options.cache)
 
     @classmethod
     def close(cls):
@@ -314,6 +316,12 @@ class Scraper(object):
                 LOGGER.debug("Rescraping user %s", name)
                 self.scrape_user(username, [weekpair[start] for start in tbd])
 
+    def _cache_sync(self, do_commit):
+        if do_commit:
+            [ cache.commit() for cache in self.caches ]
+        else:
+            [ cache.rollback() for cache in self.caches ]
+
     def run(self):
         """ Start from seed user and scrape info by following social graph.
         """
@@ -323,14 +331,13 @@ class Scraper(object):
         self.rescrape(weeks)
 
         queue = []
-
-        # auxiliary function to sample at most n items from x
-        nsample = lambda x, n: random.sample(x, min(len(x), n))
-
         # use seed if starting from scratch
         if not len(self.users):
             queue.append(self.username)
 
+        # auxiliary function to sample at most n items from x
+        n_of_x = lambda n, x: random.sample(x, min(len(x), n))
+        # conditions for while loop
         more_work = lambda: len(self.users) < self.limit
         user_pool = lambda: len(queue) + len(self.users)
 
@@ -338,12 +345,11 @@ class Scraper(object):
             while not len(queue):
                 # sample neighbours from random scraped user.
                 user = self.network.get_user(random.choice(self.users.keys()))
-                queue = nsample(self._get_friends(user), 10)
+                queue = n_of_x(self._get_friends(user), 10)
             username = queue.pop()
             if username not in self.users:
-                userid = self.scrape_user(username, weeks)
-                if userid:
-                    self.users[username] = userid
+                self.users[username] = self.scrape_user(username, weeks)
+                self._cache_sync(self.users[username] is not None)
 
         if not user_pool():
             LOGGER.error("User pool depleted prematurely.")
@@ -359,7 +365,7 @@ class Scraper(object):
         """
         artist = self.network.get_artist(name)
         artistid = self.create_artist(artist)
-
+        
         for tag in self.scrape_artisttags(artist):
             if tag not in self.tags:
                 self.tags[tag] = self.create_tag(tag)
@@ -513,6 +519,7 @@ def main():
     options.do_connect = False
     options.datematch = "2013-01"
     options.datefmt = "%Y-%m"
+    options.cache = '.scrape'
 
     scraper = Scraper(options)
 
