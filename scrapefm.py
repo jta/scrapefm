@@ -23,8 +23,28 @@ DBASE = peewee.SqliteDatabase(None)
 
 
 class _Cache(collections.Mapping):
-    def __init__(self, table):
-        self.store = dict([(row.name, row.id) for row in table.select()])
+    """ Mapping with temporary store in case of rollback.
+        Allows us to keep cache in sync with database.
+    """
+    def __init__(self, table, 
+                 key = lambda x: x.name, 
+                 value = lambda x: x.id):
+        """ Attributes
+            ----------
+            store : dict
+                Maps keys to row ID.
+            tmp : dict
+                Same as store, holds uncommitted values.
+
+            Parameters
+            ----------
+            table : peewee.BaseModel
+                Database table to cache.
+            key : function
+                Given a type of `table`, return immutable key.
+        """
+        self.store = dict([(key(row), value(row)) \
+                            for row in table.select()])
         self.tmp = dict()
 
     def __getitem__(self, key):
@@ -44,10 +64,12 @@ class _Cache(collections.Mapping):
         return len(self.store)
 
     def commit(self):
+        """ Merge tmp into store. """
         self.store.update(self.tmp)
         self.tmp = dict()
 
     def rollback(self):
+        """ Remove temporary values. """
         self.tmp = dict()
 
 
@@ -65,7 +87,7 @@ class Users(BaseModel):
     age = peewee.IntegerField(null=True)
     country = peewee.CharField(null=True)
     gender = peewee.CharField(null=True)
-    playcount = peewee.IntegerField(default=0)
+    playcount = peewee.IntegerField(null=True)
     subscriber = peewee.BooleanField(default=False)
 
 
@@ -137,14 +159,12 @@ class Scraper(object):
 
         self.initdb()
 
-        self.users = _Cache(Users)
-        self.tags = _Cache(Tags)
         self.artists = _Cache(Artists)
-
-        self.caches = (self.users, self.tags, self.artists)
-
-        load_keys = lambda t: dict([(row.name, row.id) for row in t.select()])
-        self.friends = set([(row.a, row.b) for row in Friends.select()])
+        self.friends = _Cache(Friends, lambda x: (x.a.id, x.b.id))
+        self.tags = _Cache(Tags)
+        self.users = _Cache(Users)
+        self.caches = [v for v in self.__dict__.values() \
+                            if isinstance(v, _Cache)]
 
         self.network.enable_caching(options.cache)
 
@@ -345,7 +365,7 @@ class Scraper(object):
             while not len(queue):
                 # sample neighbours from random scraped user.
                 user = self.network.get_user(random.choice(self.users.keys()))
-                queue = n_of_x(self._get_friends(user), 10)
+                queue = n_of_x(10, self._get_friends(user))
             username = queue.pop()
             if username not in self.users:
                 self.users[username] = self.scrape_user(username, weeks)
@@ -401,8 +421,7 @@ class Scraper(object):
             pair = tuple(sorted([userid, self.users[friend]]))
             if pair not in self.friends:
                 LOGGER.debug("Connecting %s with %s.", *pair)
-                Friends.create(a=pair[0], b=pair[1])
-                self.friends.add(pair)
+                self.friends[pair] = Friends.create(a=pair[0], b=pair[1]).id
 
     @handle_api_errors
     @DBASE.commit_on_success
