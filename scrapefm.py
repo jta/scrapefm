@@ -95,7 +95,7 @@ class Artists(BaseModel):
     """ Last.fm artist table. """
     mbid = peewee.CharField(null=True)
     name = peewee.TextField()
-    playcount = peewee.IntegerField(default=0)
+    playcount = peewee.IntegerField(null=True)
     listeners = peewee.IntegerField(default=0)
     yearfrom = peewee.IntegerField(null=True)
     yearto = peewee.IntegerField(null=True)
