@@ -507,7 +507,7 @@ def parse_args():
                         help='Last.fm API public key. Alternatively can \
                               be supplied through $%s variable' % API_KEY_VAR)
     
-    parser.add_argument('-c', '--config', nargs=1,
+    parser.add_argument('-c', '--config',
                         dest='config', action='store', type=str,
                         help='Configuration file.')
 
@@ -543,9 +543,8 @@ def get_options():
     """ Parse command line and config file. """
     options.update(parse_args())
 
-    options['config'] = 'scrapefm.conf'
     # import user specified config file 
-    if 'config' in options:
+    if options['config']:
         userconf = {}
         try:
             execfile(options['config'], userconf)
