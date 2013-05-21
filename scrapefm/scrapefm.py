@@ -154,7 +154,12 @@ class Scraper(object):
             Observed ID pairs of friends in ascending order.
         """
         self.__dict__ = options
-        self.network = pylast.LastFMNetwork(api_key=self.api_key)
+
+        if not 'delay' in options:
+            self.__dict__['delay'] = 0
+
+        self.network = pylast.LastFMNetwork(api_key=self.api_key, 
+                                            delay=self.delay)
         self.errcnt = 0
 
         if 'seed' in options:
@@ -249,7 +254,7 @@ class Scraper(object):
         doc = obj._request(req, True)
         fields = table._meta.get_fields()
         values = dict([(f.name, cls.get_child(doc, f)) for f in fields])
-        return table.create(**values).id
+        return table.create(**values).id, doc
 
     def _get_friends(self, user):
         """ Returns list of friends.
@@ -387,24 +392,28 @@ class Scraper(object):
                 Artist name
         """
         artist = self.network.get_artist(name)
-        artistid = self.create_artist(artist)
+        artistid, doc = self.create_artist(artist)
         
-        for tag in self.scrape_artisttags(artist):
+        for tag in self.scrape_artisttags(artist, doc):
             if tag not in self.tags:
                 self.tags[tag] = self.create_tag(tag)
             ArtistTags.create(artist=artistid, tag=self.tags[tag])
 
         return artistid
 
-    def scrape_artisttags(self, artist):
+    def scrape_artisttags(self, artist, doc = None):
         """ Iterator over top tags associated with artist
 
             Parameters
             ----------
             artist : pylast.Artist
                 Artist object.
+            doc : xml 
+                Answer to artist.getInfo request. Used to aviod
+                repeating request when underlying caching is disabled.
         """
-        doc = artist._request('artist.getInfo', True)
+        if not doc:
+            doc = artist._request('artist.getInfo', True)
         for tag in doc.getElementsByTagName("tag"):
             yield pylast._extract(tag, "name")
 
@@ -440,7 +449,7 @@ class Scraper(object):
         user = self.network.get_user(username)
 
         if username not in self.users:
-            userid = self.create_user(user)
+            userid, _ = self.create_user(user)
         else:
             userid = self.users[username]
 
@@ -531,6 +540,8 @@ def main():
                 # can only retrieve up to 200 friends at a time, so this value 
                 # determines how long we spend scraping a user.
                 'maxfriends': 1000,
+                # delay between requests
+                'delay': 0,
                 # Export friendship relationships. If skipped, we only query friend 
                 # list in order to populate random walk.
                 'do_connect': False,
@@ -541,11 +552,11 @@ def main():
                 'datefmt': "%Y-%m",
                 # Response caching. All responses can be cached to a provided filename.
                 # Useful for debugging or replaying data. disable caching, set to None.
-                #'cache': None, #'.scrape',
+                # 'cache': None,
                 # Username to start random walk at.
-                'userseed': 'spiralcircus',
+                'userseed': 'RJ',
                 # Maximum number of users to scrape.
-                'limit': 100,
+                'limit': 1000,
                 # Number seed for random, used for selecting next user in random walk.
                 'numseed': 666 }
 
