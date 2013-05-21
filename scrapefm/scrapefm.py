@@ -506,6 +506,11 @@ def parse_args():
                         default=os.environ.get(API_KEY_VAR),
                         help='Last.fm API public key. Alternatively can \
                               be supplied through $%s variable' % API_KEY_VAR)
+    
+    parser.add_argument('-c', '--config', nargs=1,
+                        dest='config', action='store', type=str,
+                        help='Configuration file.')
+
     group = parser.add_mutually_exclusive_group()
 
     group.add_argument('--debug', dest='debug',
@@ -534,10 +539,30 @@ def parse_args():
 
     return args.__dict__
 
+def get_options():
+    """ Parse command line and config file. """
+    options.update(parse_args())
+
+    options['config'] = 'scrapefm.conf'
+    # import user specified config file 
+    if 'config' in options:
+        userconf = {}
+        try:
+            execfile(options['config'], userconf)
+            options.update(userconf['options'])
+        except IOError as e:
+            print e
+            return None
+        except KeyError as e:
+            print "Malformed configuration file."
+            return None
+    return options
 
 def main():
     """ Main entry point """
-    options.update(parse_args())
+    options = get_options()
+    if not options:
+        return
     scraper = Scraper(options)
 
     if os.environ.get(HTTP_PROXY):
