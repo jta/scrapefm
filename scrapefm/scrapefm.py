@@ -5,6 +5,7 @@
 """
 import argparse
 import collections
+from config import options
 from datetime import datetime
 import logging
 import peewee
@@ -155,11 +156,11 @@ class Scraper(object):
         """
         self.__dict__ = options
 
-        if not 'delay' in options:
-            self.__dict__['delay'] = 0
+        netargs = {'api_key': self.api_key}
+        if 'delay' in options:
+	        netargs['delay'] = options['delay']
 
-        self.network = pylast.LastFMNetwork(api_key=self.api_key, 
-                                            delay=self.delay)
+        self.network = pylast.LastFMNetwork(**netargs)
         self.errcnt = 0
 
         if 'seed' in options:
@@ -536,31 +537,6 @@ def parse_args():
 
 def main():
     """ Main entry point """
-    options = { # Maximum number of friends to collect per user. The last.fm API
-                # can only retrieve up to 200 friends at a time, so this value 
-                # determines how long we spend scraping a user.
-                'maxfriends': 1000,
-                # delay between requests
-                'delay': 0,
-                # Export friendship relationships. If skipped, we only query friend 
-                # list in order to populate random walk.
-                'do_connect': False,
-                # Dates for which to crawl data. Datematch provides the desired
-                # period in string format, while datefmt describes how that format
-                # should be converted to the native date representation.
-                'datematch': "2013-01",
-                'datefmt': "%Y-%m",
-                # Response caching. All responses can be cached to a provided filename.
-                # Useful for debugging or replaying data. disable caching, set to None.
-                # 'cache': None,
-                # Username to start random walk at.
-                'userseed': 'RJ',
-                # Maximum number of users to scrape.
-                'limit': 1000,
-                # Number seed for random, used for selecting next user in random walk.
-                'numseed': 666 }
-
-
     options.update(parse_args())
     scraper = Scraper(options)
 
