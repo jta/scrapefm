@@ -88,7 +88,7 @@ class Users(BaseModel):
     country = peewee.CharField(null=True)
     gender = peewee.CharField(null=True)
     playcount = peewee.IntegerField(null=True)
-    subscriber = peewee.BooleanField(default=False)
+    subscriber = peewee.IntegerField()
 
 
 class Artists(BaseModel):
@@ -96,7 +96,7 @@ class Artists(BaseModel):
     mbid = peewee.CharField(null=True)
     name = peewee.TextField()
     playcount = peewee.IntegerField(null=True)
-    listeners = peewee.IntegerField(default=0)
+    listeners = peewee.IntegerField(default=0, null=True)
     yearfrom = peewee.IntegerField(null=True)
     yearto = peewee.IntegerField(null=True)
 
@@ -153,11 +153,12 @@ class Scraper(object):
         friends : set of (int, int)
             Observed ID pairs of friends in ascending order.
         """
-        self.__dict__ = dict(options.__dict__.items())
+        self.__dict__ = options
         self.network = pylast.LastFMNetwork(api_key=self.api_key)
         self.errcnt = 0
 
-        random.seed(options.seed)
+        if 'seed' in options:
+            random.seed(options['seed'])
         self.initdb()
 
         self.artists = _Cache(Artists)
@@ -167,7 +168,8 @@ class Scraper(object):
         self.caches = [v for v in self.__dict__.values() \
                             if isinstance(v, _Cache)]
 
-        self.network.enable_caching(options.cache)
+	if 'cache' in options:
+		self.network.enable_caching(options['cache'])
 
     @classmethod
     def close(cls):
@@ -354,7 +356,7 @@ class Scraper(object):
         queue = []
         # use seed if starting from scratch
         if not len(self.users):
-            queue.append(self.username)
+            queue.append(self.userseed)
 
         # auxiliary function to sample at most n items from x
         n_of_x = lambda n, x: random.sample(x, min(len(x), n))
@@ -494,15 +496,6 @@ def parse_args():
                         default=os.environ.get(API_KEY_VAR),
                         help='Last.fm API public key. Alternatively can \
                               be supplied through $%s variable' % API_KEY_VAR)
-
-    parser.add_argument('--seed', dest='username',
-                        action='store', type=str, default='RJ',
-                        help='Starting point for graph traversal.')
-
-    parser.add_argument('--users', dest='limit',
-                        action='store', type=int, default=100,
-                        help='Maximum number of users to scrape.')
-
     group = parser.add_mutually_exclusive_group()
 
     group.add_argument('--debug', dest='debug',
@@ -529,19 +522,35 @@ def parse_args():
     if not args.api_key:
         parser.error('No API key provided in options or $%s' % API_KEY_VAR)
 
-    return args
+    return args.__dict__
 
 
 def main():
     """ Main entry point """
-    options = parse_args()
-    options.maxfriends = 1000
-    options.do_connect = False
-    options.datematch = "2013-01"
-    options.datefmt = "%Y-%m"
-    options.cache = '.scrape'
-    options.seed = 666
+    options = { # Maximum number of friends to collect per user. The last.fm API
+                # can only retrieve up to 200 friends at a time, so this value 
+                # determines how long we spend scraping a user.
+                'maxfriends': 1000,
+                # Export friendship relationships. If skipped, we only query friend 
+                # list in order to populate random walk.
+                'do_connect': False,
+                # Dates for which to crawl data. Datematch provides the desired
+                # period in string format, while datefmt describes how that format
+                # should be converted to the native date representation.
+                'datematch': "2013-01",
+                'datefmt': "%Y-%m",
+                # Response caching. All responses can be cached to a provided filename.
+                # Useful for debugging or replaying data. disable caching, set to None.
+                #'cache': None, #'.scrape',
+                # Username to start random walk at.
+                'userseed': 'spiralcircus',
+                # Maximum number of users to scrape.
+                'limit': 100,
+                # Number seed for random, used for selecting next user in random walk.
+                'numseed': 666 }
 
+
+    options.update(parse_args())
     scraper = Scraper(options)
 
     if os.environ.get(HTTP_PROXY):
